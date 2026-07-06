@@ -1,53 +1,32 @@
 # Amnezia Panel Portable
 
-> Быстрый установщик собственного серверного стека для VPN, удалённого доступа, MQTT и веб-панели управления.
+## What It Does
 
-## Возможности
+One-shot installer for a self-hosted panel stack on Debian/Ubuntu with:
 
-Скрипт разворачивает на сервере Debian или Ubuntu набор сервисов, который можно выбрать во время установки:
+- AmneziaWG
+- WireGuard
+- OpenVPN
+- Hysteria 2
+- VLESS Reality (Xray)
+- SoftEther / SSTP
+- EMQX
+- Fail2Ban
+- Web panel
 
-| Компонент | Назначение |
-|---|---|
-| **AmneziaWG** | VPN на базе Amnezia WireGuard |
-| **WireGuard** | Классический WireGuard VPN |
-| **OpenVPN** | Совместимый VPN-сервер |
-| **Hysteria 2** | Высокопроизводительный прокси-протокол |
-| **VLESS Reality (Xray)** | VLESS + Reality на базе Xray |
-| **SoftEther / SSTP** | VPN-сервер SoftEther и доступ по SSTP |
-| **EMQX** | MQTT-брокер |
-| **Fail2Ban** | Защита от перебора паролей и подозрительных подключений |
-| **Веб-панель** | Управление установленными сервисами через браузер |
+## Usage
 
----
-
-## Требования
-
-- Сервер под управлением **Debian** или **Ubuntu**;
-- доступ пользователя `root` или возможность выполнять команды через `sudo`;
-- доступ сервера в интернет;
-- все файлы комплекта должны находиться в одной папке.
-
-> [!WARNING]
-> Для панели и VPN используйте сложные уникальные пароли. Не оставляйте административные сервисы открытыми для всего интернета без необходимости.
-
----
-
-## Быстрый запуск
-
-Перейдите в каталог с файлами установщика и выполните:
+Run as root:
 
 ```bash
 chmod +x install.sh
 ./install.sh
 ```
 
-Установщик откроется в интерактивном режиме, предложит выбрать нужные компоненты и спросит порты для каждого включённого VPN-модуля.
+By default the installer is interactive and asks what to install.
+It also asks which ports to use for each selected VPN module.
 
----
-
-## Автоматическая установка
-
-Для запуска без вопросов задайте переменные окружения перед выполнением скрипта:
+For unattended mode use env flags:
 
 ```bash
 NONINTERACTIVE=1 \
@@ -59,37 +38,20 @@ INSTALL_EMQX=no \
 ./install.sh
 ```
 
-### Основные параметры
+Component flags:
 
-| Переменная | Описание |
-|---|---|
-| `NONINTERACTIVE=1` | Запуск без интерактивных вопросов |
-| `PANEL_PUBLIC_HOST` | Публичный IP-адрес или доменное имя сервера |
-| `PANEL_USER` | Логин администратора веб-панели |
-| `PANEL_PASS` | Пароль администратора веб-панели |
+- `INSTALL_PANEL_CORE=yes|no`
+- `INSTALL_FAIL2BAN=yes|no`
+- `INSTALL_AMNEZIAWG=yes|no`
+- `INSTALL_WIREGUARD=yes|no`
+- `INSTALL_OPENVPN=yes|no`
+- `INSTALL_HYSTERIA=yes|no`
+- `INSTALL_VLESS=yes|no`
+- `INSTALL_SOFTETHER=yes|no`
+- `INSTALL_EMQX=yes|no`
+- `INSTALL_OFFICE_BACKUP=yes|no`
 
----
-
-## Выбор устанавливаемых компонентов
-
-Каждому параметру можно присвоить `yes` или `no`.
-
-| Переменная | Компонент |
-|---|---|
-| `INSTALL_PANEL_CORE=yes|no` | Базовая часть веб-панели |
-| `INSTALL_FAIL2BAN=yes|no` | Fail2Ban |
-| `INSTALL_AMNEZIAWG=yes|no` | AmneziaWG |
-| `INSTALL_WIREGUARD=yes|no` | WireGuard |
-| `INSTALL_OPENVPN=yes|no` | OpenVPN |
-| `INSTALL_HYSTERIA=yes|no` | Hysteria 2 |
-| `INSTALL_VLESS=yes|no` | VLESS Reality / Xray |
-| `INSTALL_SOFTETHER=yes|no` | SoftEther / SSTP |
-| `INSTALL_EMQX=yes|no` | EMQX |
-| `INSTALL_OFFICE_BACKUP=yes|no` | Настройка резервного копирования в офисное хранилище |
-
-## Настройка портов
-
-Можно заранее задать порты через переменные окружения:
+Port variables:
 
 - `AMNEZIAWG_PORT`
 - `WIREGUARD_PORT`
@@ -99,33 +61,7 @@ INSTALL_EMQX=no \
 - `PANEL_SSTP_PORT`
 - `PANEL_SSTP_ADMIN_PORT`
 
-Пример минимальной установки с панелью, AmneziaWG и WireGuard:
-
-```bash
-NONINTERACTIVE=1 \
-PANEL_PUBLIC_HOST=vpn.example.com \
-PANEL_USER=admin \
-PANEL_PASS='change-this-password' \
-INSTALL_PANEL_CORE=yes \
-INSTALL_FAIL2BAN=yes \
-INSTALL_AMNEZIAWG=yes \
-INSTALL_WIREGUARD=yes \
-INSTALL_OPENVPN=no \
-INSTALL_HYSTERIA=no \
-INSTALL_VLESS=no \
-INSTALL_SOFTETHER=no \
-INSTALL_EMQX=no \
-INSTALL_OFFICE_BACKUP=no \
-AMNEZIAWG_PORT=443 \
-WIREGUARD_PORT=51820 \
-./install.sh
-```
-
----
-
-## Резервное копирование в NAS через SSTP
-
-Настройка резервного копирования в офисное хранилище необязательна. Для её включения передайте данные SSTP-подключения и сетевой папки NAS:
+Optional backup/NAS bootstrap via SSTP:
 
 ```bash
 OFFICE_SSTP_HOST=vpn.example.com \
@@ -138,62 +74,39 @@ OFFICE_NAS_MOUNT=/mnt/office-nas \
 ./install.sh
 ```
 
-| Переменная | Описание |
-|---|---|
-| `OFFICE_SSTP_HOST` | Адрес SSTP-сервера |
-| `OFFICE_SSTP_USER` / `OFFICE_SSTP_PASS` | Учётные данные для SSTP |
-| `OFFICE_NAS_SHARE` | Сетевая папка NAS в формате `//IP/Общий_ресурс` |
-| `OFFICE_NAS_USER` / `OFFICE_NAS_PASS` | Учётные данные для NAS |
-| `OFFICE_NAS_MOUNT` | Локальная точка монтирования сетевой папки |
-
-> [!NOTE]
-> Настройка резервного копирования выполняется только при явной передаче соответствующих переменных окружения.
-
----
-
-## Ограничение доступа к EMQX
-
-Чтобы разрешить доступ к EMQX только с определённых публичных IP-адресов, укажите их через запятую:
+Optional EMQX public allowlist:
 
 ```bash
 EMQX_ALLOW_IPS='1.2.3.4/32,5.6.7.8/32' ./install.sh
 ```
 
----
+## Bundle Files
 
-## Состав комплекта
+- `install.sh`
+- `uninstall.sh`
+- `panel2.py`
 
-| Файл | Назначение |
-|---|---|
-| `install.sh` | Установка и первоначальная настройка сервисов |
-| `uninstall.sh` | Удаление установленных компонентов |
-| `panel2.py` | Веб-панель |
+Keep them in the same directory.
 
-Все три файла должны находиться **в одном каталоге**.
+## Notes
 
----
+- Current auto-install path is built for `apt` systems.
+- `amneziawg-tools` auto-install is implemented for Ubuntu.
+- Existing configs are preserved where possible.
+- Office backup bootstrap is optional and requires explicit env variables.
+- Panel navigation hides modules that were disabled at install time.
 
-## Важные замечания
+## Uninstall
 
-- Автоматическая установка рассчитана на системы с пакетным менеджером `apt`.
-- Автоматическая установка `amneziawg-tools` реализована для Ubuntu.
-- Существующие конфигурации по возможности сохраняются.
-- Модули, отключённые во время установки, не отображаются в навигации веб-панели.
-- Перед запуском на рабочем сервере рекомендуется сделать резервную копию текущих конфигураций и проверить, что нужные порты не заняты.
-
----
-
-## Удаление
-
-Запустите скрипт от имени `root`:
+Run as root:
 
 ```bash
 chmod +x uninstall.sh
 ./uninstall.sh
 ```
 
-Скрипт удаления может:
+It can:
 
-- остановить и отключить сервисы;
-- удалить созданные конфигурации и файлы;
-- при необходимости удалить установленные пакеты.
+- stop and disable services
+- remove generated files
+- optionally purge packages
