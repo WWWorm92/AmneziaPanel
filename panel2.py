@@ -2142,6 +2142,14 @@ def read_proc_net_dev():
     return stats
 
 
+def read_proc_cpu():
+    fields = Path("/proc/stat").read_text().splitlines()[0].split()[1:]
+    values = [int(x) for x in fields]
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    total = sum(values)
+    return total, idle
+
+
 def format_bytes(value):
     value = float(value)
     for unit in ["B", "KB", "MB", "GB", "TB"]:
@@ -2153,6 +2161,7 @@ def format_bytes(value):
 def collect_metrics():
     cpu_count = os.cpu_count() or 1
     load1, load5, load15 = os.getloadavg()
+    cpu_total_1, cpu_idle_1 = read_proc_cpu()
     mem = {}
     for line in Path("/proc/meminfo").read_text().splitlines():
         if ":" in line:
@@ -2173,12 +2182,16 @@ def collect_metrics():
     iface = network_default_iface()
     dev1 = read_proc_net_dev().get(iface, {"rx": 0, "tx": 0})
     time.sleep(0.2)
+    cpu_total_2, cpu_idle_2 = read_proc_cpu()
     dev2 = read_proc_net_dev().get(iface, {"rx": 0, "tx": 0})
+    cpu_total_delta = max(cpu_total_2 - cpu_total_1, 1)
+    cpu_idle_delta = max(cpu_idle_2 - cpu_idle_1, 0)
+    cpu_pct = max(0.0, min(100.0, (cpu_total_delta - cpu_idle_delta) / cpu_total_delta * 100.0))
     rx_rate = max(dev2["rx"] - dev1["rx"], 0) * 5
     tx_rate = max(dev2["tx"] - dev1["tx"], 0) * 5
     return {
         "cpu_count": cpu_count,
-        "cpu_pct": min(load1 / cpu_count * 100, 999.0),
+        "cpu_pct": cpu_pct,
         "load1": load1,
         "load5": load5,
         "load15": load15,
