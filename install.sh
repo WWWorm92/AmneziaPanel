@@ -56,11 +56,67 @@ box() {
 }
 
 STEP_CURRENT=0
-STEP_TOTAL=12
+STEP_TOTAL=0
 
 step() {
   STEP_CURRENT=$((STEP_CURRENT + 1))
   printf '\n%b\n' "${C_GREEN}${C_BOLD}[${STEP_CURRENT}/${STEP_TOTAL}]${C_RESET} ${C_BOLD}$*${C_RESET}"
+}
+
+count_step() {
+  STEP_TOTAL=$((STEP_TOTAL + 1))
+}
+
+calculate_step_total() {
+  STEP_CURRENT=0
+  STEP_TOTAL=0
+
+  count_step
+
+  if is_true "$INSTALL_AMNEZIAWG" && ! command -v awg >/dev/null 2>&1; then
+    count_step
+  fi
+  if is_true "$INSTALL_EMQX" && ! dpkg -s emqx-enterprise >/dev/null 2>&1; then
+    count_step
+  fi
+  if is_true "$INSTALL_VLESS"; then
+    count_step
+  fi
+  if is_true "$INSTALL_HYSTERIA"; then
+    count_step
+  fi
+
+  count_step
+
+  if is_true "$INSTALL_FAIL2BAN"; then
+    count_step
+  fi
+  if is_true "$INSTALL_AMNEZIAWG"; then
+    count_step
+  fi
+  if is_true "$INSTALL_WIREGUARD"; then
+    count_step
+  fi
+  if is_true "$INSTALL_HYSTERIA"; then
+    count_step
+  fi
+  if is_true "$INSTALL_VLESS"; then
+    count_step
+  fi
+  if is_true "$INSTALL_OPENVPN"; then
+    count_step
+  fi
+  if is_true "$INSTALL_SOFTETHER"; then
+    count_step
+  fi
+  if is_true "$INSTALL_EMQX"; then
+    count_step
+  fi
+  if is_true "$INSTALL_OFFICE_BACKUP"; then
+    count_step
+  fi
+
+  count_step
 }
 
 ok() {
@@ -269,6 +325,7 @@ configure_components() {
     fi
   fi
 
+  calculate_step_total
   print_plan
 }
 
