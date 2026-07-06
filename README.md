@@ -72,6 +72,7 @@ EMQX_ALLOW_IPS='1.2.3.4/32,5.6.7.8/32' ./install.sh
 ## Bundle Files
 
 - `install.sh`
+- `uninstall.sh`
 - `panel2.py`
 
 Keep them in the same directory.
@@ -82,3 +83,19 @@ Keep them in the same directory.
 - `amneziawg-tools` auto-install is implemented for Ubuntu.
 - Existing configs are preserved where possible.
 - Office backup bootstrap is optional and requires explicit env variables.
+- Panel navigation hides modules that were disabled at install time.
+
+## Uninstall
+
+Run as root:
+
+```bash
+chmod +x uninstall.sh
+./uninstall.sh
+```
+
+It can:
+
+- stop and disable services
+- remove generated files
+- optionally purge packages

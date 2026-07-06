@@ -111,6 +111,16 @@ NAV_GROUPS = [
     ("Администрирование", ["fail2ban", "audit", "panel-users", "configs"]),
 ]
 
+NAV_FEATURES = {
+    "amnezia": "amneziawg",
+    "wireguard": "wireguard",
+    "openvpn": "openvpn",
+    "hysteria": "hysteria",
+    "vless": "vless",
+    "sstp": "sstp",
+    "fail2ban": "fail2ban",
+}
+
 
 def icon(name):
     icons = {
@@ -141,6 +151,16 @@ def icon(name):
 
 
 DEFAULT_SETTINGS = {
+    "features": {
+        "amneziawg": True,
+        "wireguard": True,
+        "openvpn": True,
+        "hysteria": True,
+        "vless": True,
+        "sstp": True,
+        "fail2ban": True,
+        "emqx": True,
+    },
     "network": {"speed_cap_mbps": 200},
     "downloads": {
         "AmneziaWG (старый)": "/etc/wireguard/wg0.conf",
@@ -226,6 +246,15 @@ SERVICE_MAP = dict(SETTINGS.get("services", {}))
 SERVICE_LABELS = dict(SETTINGS.get("service_labels", {}))
 SERVICE_MAP.setdefault("wireguard", "wg-quick@wg0.service")
 SERVICE_LABELS.setdefault("wireguard", "WireGuard")
+
+
+def feature_enabled(name):
+    return bool((SETTINGS.get("features") or {}).get(name, True))
+
+
+def nav_item_visible(key):
+    feature = NAV_FEATURES.get(key)
+    return feature_enabled(feature) if feature else True
 
 
 def run(cmd, input_text=None):
@@ -2994,9 +3023,12 @@ def build_shell(page_title, active_page, body_html, message="", error=""):
     sidebar_parts = []
     mobile_parts = []
     for group, keys in NAV_GROUPS:
+        group_keys = [key for key in keys if nav_item_visible(key)]
+        if not group_keys:
+            continue
         sidebar_parts.append(f"<div class='nav-group-title'>{html.escape(group)}</div>")
         mobile_parts.append(f"<div class='drawer-group-title'>{html.escape(group)}</div>")
-        for key in keys:
+        for key in group_keys:
             _, href, icon_name, label = nav_by_key[key]
             sidebar_parts.append(f"<a class='navicon {'active' if active_page == key else ''}' href='{href}' title='{html.escape(label)}'>{icon(icon_name)}<span>{html.escape(label)}</span></a>")
             mobile_parts.append(f"<a class='drawer-link {'active' if active_page == key else ''}' href='{href}' onclick='toggleDrawer(false)'><span class='ico'>{icon(icon_name)}</span><span>{html.escape(label)}</span></a>")
@@ -4414,6 +4446,17 @@ def qr_page(profile_name, client_name):
 
 
 def page_for_path(path, message="", error=""):
+    route_key = {
+        "/amnezia": "amnezia",
+        "/wireguard": "wireguard",
+        "/openvpn": "openvpn",
+        "/hysteria": "hysteria",
+        "/vless": "vless",
+        "/sstp": "sstp",
+        "/fail2ban": "fail2ban",
+    }.get(path)
+    if route_key and not nav_item_visible(route_key):
+        return build_home()
     if path == "/system":
         return build_system_page(message, error)
     if path in {"/clients", "/amnezia"}:

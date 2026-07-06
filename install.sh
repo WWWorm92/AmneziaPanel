@@ -368,6 +368,27 @@ ensure_state_files() {
   [ -f /var/lib/amnezia-panel/vless_clients.json ] || printf '[]\n' > /var/lib/amnezia-panel/vless_clients.json
 }
 
+write_panel_settings() {
+  if ! is_true "$INSTALL_PANEL_CORE"; then
+    return
+  fi
+  section "Writing Panel Settings"
+  cat > /var/lib/amnezia-panel/settings.json <<EOF
+{
+  "features": {
+    "amneziawg": $(is_true "$INSTALL_AMNEZIAWG" && printf true || printf false),
+    "wireguard": $(is_true "$INSTALL_WIREGUARD" && printf true || printf false),
+    "openvpn": $(is_true "$INSTALL_OPENVPN" && printf true || printf false),
+    "hysteria": $(is_true "$INSTALL_HYSTERIA" && printf true || printf false),
+    "vless": $(is_true "$INSTALL_VLESS" && printf true || printf false),
+    "sstp": $(is_true "$INSTALL_SOFTETHER" && printf true || printf false),
+    "fail2ban": $(is_true "$INSTALL_FAIL2BAN" && printf true || printf false),
+    "emqx": $(is_true "$INSTALL_EMQX" && printf true || printf false)
+  }
+}
+EOF
+}
+
 firewall_exec_lines() {
   local protocol port
   while IFS=: read -r protocol port; do
@@ -1026,6 +1047,7 @@ main() {
   write_sysctl
   ensure_panel_users
   ensure_state_files
+  write_panel_settings
   write_service_units
   ensure_fail2ban
   generate_awg_server
