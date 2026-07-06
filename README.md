@@ -41,7 +41,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-Установщик откроется в интерактивном режиме и предложит выбрать нужные компоненты.
+Установщик откроется в интерактивном режиме, предложит выбрать нужные компоненты и спросит порты для каждого включённого VPN-модуля.
 
 ---
 
@@ -87,6 +87,18 @@ INSTALL_EMQX=no \
 | `INSTALL_EMQX=yes|no` | EMQX |
 | `INSTALL_OFFICE_BACKUP=yes|no` | Настройка резервного копирования в офисное хранилище |
 
+## Настройка портов
+
+Можно заранее задать порты через переменные окружения:
+
+- `AMNEZIAWG_PORT`
+- `WIREGUARD_PORT`
+- `OPENVPN_PORT`
+- `HYSTERIA_PORT`
+- `VLESS_PORT`
+- `PANEL_SSTP_PORT`
+- `PANEL_SSTP_ADMIN_PORT`
+
 Пример минимальной установки с панелью, AmneziaWG и WireGuard:
 
 ```bash
@@ -104,6 +116,8 @@ INSTALL_VLESS=no \
 INSTALL_SOFTETHER=no \
 INSTALL_EMQX=no \
 INSTALL_OFFICE_BACKUP=no \
+AMNEZIAWG_PORT=443 \
+WIREGUARD_PORT=51820 \
 ./install.sh
 ```
 

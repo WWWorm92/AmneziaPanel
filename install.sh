@@ -3,20 +3,47 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+if [ -t 1 ]; then
+  C_RESET='\033[0m'
+  C_BOLD='\033[1m'
+  C_DIM='\033[2m'
+  C_BLUE='\033[34m'
+  C_GREEN='\033[32m'
+  C_YELLOW='\033[33m'
+  C_RED='\033[31m'
+else
+  C_RESET=''
+  C_BOLD=''
+  C_DIM=''
+  C_BLUE=''
+  C_GREEN=''
+  C_YELLOW=''
+  C_RED=''
+fi
+
+banner() {
+  printf '%b\n' "${C_BLUE}${C_BOLD}Amnezia Panel Portable Installer${C_RESET}"
+  printf '%b\n' "${C_DIM}Panel + VPN stack bootstrap for Ubuntu/Debian${C_RESET}"
+}
+
 log() {
   printf '%s\n' "$*"
 }
 
 section() {
-  printf '\n== %s ==\n' "$*"
+  printf '\n%b\n' "${C_BLUE}${C_BOLD}== $* ==${C_RESET}"
+}
+
+ok() {
+  printf '%b\n' "${C_GREEN}OK${C_RESET}  $*"
 }
 
 warn() {
-  printf 'WARN: %s\n' "$*" >&2
+  printf '%b\n' "${C_YELLOW}WARN${C_RESET} $*" >&2
 }
 
 fail() {
-  printf 'ERROR: %s\n' "$*" >&2
+  printf '%b\n' "${C_RED}${C_BOLD}ERROR${C_RESET} $*" >&2
   exit 1
 }
 
@@ -100,12 +127,12 @@ print_plan() {
   section "Install Plan"
   log "Panel core:        ${INSTALL_PANEL_CORE}"
   log "Fail2Ban:          ${INSTALL_FAIL2BAN}"
-  log "AmneziaWG:         ${INSTALL_AMNEZIAWG}"
-  log "WireGuard:         ${INSTALL_WIREGUARD}"
-  log "OpenVPN:           ${INSTALL_OPENVPN}"
-  log "Hysteria 2:        ${INSTALL_HYSTERIA}"
-  log "VLESS / Xray:      ${INSTALL_VLESS}"
-  log "SoftEther / SSTP:  ${INSTALL_SOFTETHER}"
+  log "AmneziaWG:         ${INSTALL_AMNEZIAWG} ${C_DIM}(udp/${AMNEZIAWG_PORT})${C_RESET}"
+  log "WireGuard:         ${INSTALL_WIREGUARD} ${C_DIM}(udp/${WIREGUARD_PORT})${C_RESET}"
+  log "OpenVPN:           ${INSTALL_OPENVPN} ${C_DIM}(udp/${OPENVPN_PORT})${C_RESET}"
+  log "Hysteria 2:        ${INSTALL_HYSTERIA} ${C_DIM}(udp/${HYSTERIA_PORT})${C_RESET}"
+  log "VLESS / Xray:      ${INSTALL_VLESS} ${C_DIM}(tcp/${VLESS_PORT})${C_RESET}"
+  log "SoftEther / SSTP:  ${INSTALL_SOFTETHER} ${C_DIM}(tcp/${PANEL_SSTP_PORT})${C_RESET}"
   log "EMQX:              ${INSTALL_EMQX}"
   log "Office backup:     ${INSTALL_OFFICE_BACKUP}"
 }
@@ -130,13 +157,18 @@ configure_components() {
   : "${PANEL_PASS:=$(random_b64)}"
   : "${PANEL_PORT:=8088}"
   : "${PANEL_IFACE:=awg0}"
-  : "${PANEL_ENDPOINT:=${PANEL_PUBLIC_HOST}:443}"
-  : "${PANEL_IPHONE_ENDPOINT:=${PANEL_PUBLIC_HOST}:443}"
+  : "${AMNEZIAWG_PORT:=443}"
+  : "${WIREGUARD_PORT:=51820}"
+  : "${OPENVPN_PORT:=1194}"
+  : "${HYSTERIA_PORT:=8448}"
+  : "${VLESS_PORT:=8449}"
+  : "${PANEL_ENDPOINT:=${PANEL_PUBLIC_HOST}:${AMNEZIAWG_PORT}}"
+  : "${PANEL_IPHONE_ENDPOINT:=${PANEL_PUBLIC_HOST}:${AMNEZIAWG_PORT}}"
   : "${PANEL_MTU:=1280}"
   : "${PANEL_SERVER_IP:=10.66.67.1}"
   : "${PANEL_SUBNET:=10.66.67.0/24}"
   : "${PANEL_WG_IFACE:=wg0}"
-  : "${PANEL_WG_ENDPOINT:=${PANEL_PUBLIC_HOST}:51820}"
+  : "${PANEL_WG_ENDPOINT:=${PANEL_PUBLIC_HOST}:${WIREGUARD_PORT}}"
   : "${PANEL_WG_SUBNET:=10.77.67.0/24}"
   : "${PANEL_WG_SERVER_IP:=10.77.67.1}"
   : "${PANEL_SSTP_ADMIN_PORT:=5555}"
@@ -165,6 +197,28 @@ configure_components() {
     prompt_value PANEL_USER "Panel admin user" "$PANEL_USER"
     prompt_value PANEL_PASS "Panel admin password" "$PANEL_PASS"
     prompt_value PANEL_PORT "Panel port" "$PANEL_PORT"
+    if is_true "$INSTALL_AMNEZIAWG"; then
+      prompt_value AMNEZIAWG_PORT "AmneziaWG port" "$AMNEZIAWG_PORT"
+      PANEL_ENDPOINT="${PANEL_PUBLIC_HOST}:${AMNEZIAWG_PORT}"
+      PANEL_IPHONE_ENDPOINT="${PANEL_PUBLIC_HOST}:${AMNEZIAWG_PORT}"
+    fi
+    if is_true "$INSTALL_WIREGUARD"; then
+      prompt_value WIREGUARD_PORT "WireGuard port" "$WIREGUARD_PORT"
+      PANEL_WG_ENDPOINT="${PANEL_PUBLIC_HOST}:${WIREGUARD_PORT}"
+    fi
+    if is_true "$INSTALL_OPENVPN"; then
+      prompt_value OPENVPN_PORT "OpenVPN port" "$OPENVPN_PORT"
+    fi
+    if is_true "$INSTALL_HYSTERIA"; then
+      prompt_value HYSTERIA_PORT "Hysteria port" "$HYSTERIA_PORT"
+    fi
+    if is_true "$INSTALL_VLESS"; then
+      prompt_value VLESS_PORT "VLESS port" "$VLESS_PORT"
+    fi
+    if is_true "$INSTALL_SOFTETHER"; then
+      prompt_value PANEL_SSTP_PORT "SoftEther/SSTP port" "$PANEL_SSTP_PORT"
+      prompt_value PANEL_SSTP_ADMIN_PORT "SoftEther admin port" "$PANEL_SSTP_ADMIN_PORT"
+    fi
     if is_true "$INSTALL_EMQX"; then
       prompt_value EMQX_ALLOW_IPS "EMQX allowlist (comma-separated CIDRs, blank for VPN-only)" "$EMQX_ALLOW_IPS"
     fi
@@ -217,6 +271,7 @@ install_packages() {
   section "Installing Packages"
   apt-get update
   apt-get install -y $package_list
+  ok "Packages installed"
 }
 
 ensure_amnezia_repo() {
@@ -300,16 +355,21 @@ PANEL_USER=${PANEL_USER}
 PANEL_PASS=${PANEL_PASS}
 PANEL_HOST=0.0.0.0
 PANEL_PORT=${PANEL_PORT}
+AMNEZIAWG_PORT=${AMNEZIAWG_PORT}
 PANEL_IFACE=${PANEL_IFACE}
 PANEL_ENDPOINT=${PANEL_ENDPOINT}
 PANEL_IPHONE_ENDPOINT=${PANEL_IPHONE_ENDPOINT}
 PANEL_MTU=${PANEL_MTU}
 PANEL_SERVER_IP=${PANEL_SERVER_IP}
 PANEL_SUBNET=${PANEL_SUBNET}
+WIREGUARD_PORT=${WIREGUARD_PORT}
 PANEL_WG_IFACE=${PANEL_WG_IFACE}
 PANEL_WG_ENDPOINT=${PANEL_WG_ENDPOINT}
 PANEL_WG_SUBNET=${PANEL_WG_SUBNET}
 PANEL_WG_SERVER_IP=${PANEL_WG_SERVER_IP}
+OPENVPN_PORT=${OPENVPN_PORT}
+HYSTERIA_PORT=${HYSTERIA_PORT}
+VLESS_PORT=${VLESS_PORT}
 PANEL_SSTP_HOST=127.0.0.1
 PANEL_SSTP_ADMIN_PORT=${PANEL_SSTP_ADMIN_PORT}
 PANEL_SSTP_ADMIN_PASS=${PANEL_SSTP_ADMIN_PASS}
@@ -319,6 +379,7 @@ PANEL_SSTP_PORT=${PANEL_SSTP_PORT}
 PANEL_SSTP_USER=${PANEL_SSTP_USER}
 EOF
     chmod 0600 /etc/amnezia-panel.env
+    ok "Panel environment written"
   fi
 }
 
@@ -411,19 +472,19 @@ selected_panel_ports() {
     printf '%s\n' "tcp:${PANEL_PORT}"
   fi
   if is_true "$INSTALL_AMNEZIAWG"; then
-    printf '%s\n' 'udp:443'
+    printf '%s\n' "udp:${AMNEZIAWG_PORT}"
   fi
   if is_true "$INSTALL_WIREGUARD"; then
-    printf '%s\n' 'udp:51820'
+    printf '%s\n' "udp:${WIREGUARD_PORT}"
   fi
   if is_true "$INSTALL_OPENVPN"; then
-    printf '%s\n' 'udp:1194'
+    printf '%s\n' "udp:${OPENVPN_PORT}"
   fi
   if is_true "$INSTALL_HYSTERIA"; then
-    printf '%s\n' 'udp:8448'
+    printf '%s\n' "udp:${HYSTERIA_PORT}"
   fi
   if is_true "$INSTALL_VLESS"; then
-    printf '%s\n' 'tcp:8449'
+    printf '%s\n' "tcp:${VLESS_PORT}"
   fi
   if is_true "$INSTALL_SOFTETHER"; then
     printf '%s\n' "tcp:${PANEL_SSTP_PORT}"
@@ -608,7 +669,7 @@ generate_awg_server() {
     cat > /etc/amnezia/amneziawg/awg0.conf <<EOF
 [Interface]
 Address = ${PANEL_SERVER_IP}/24
-ListenPort = 443
+ListenPort = ${AMNEZIAWG_PORT}
 PrivateKey = $(tr -d '\n' < /etc/amnezia/amneziawg/awg0.key)
 Jc = 4
 Jmin = 8
@@ -646,7 +707,7 @@ generate_wg_server() {
     cat > /etc/wireguard/wg0.conf <<EOF
 [Interface]
 Address = ${PANEL_WG_SERVER_IP}/24
-ListenPort = 51820
+ListenPort = ${WIREGUARD_PORT}
 PrivateKey = $(tr -d '\n' < /etc/wireguard/wg0.key)
 SaveConfig = true
 Table = auto
@@ -668,7 +729,7 @@ ensure_hysteria_config() {
   fi
   if [ ! -f /etc/hysteria/config.yaml ]; then
     cat > /etc/hysteria/config.yaml <<EOF
-listen: :8448
+listen: :${HYSTERIA_PORT}
 
 tls:
   cert: /etc/hysteria/server.crt
@@ -713,7 +774,7 @@ ensure_xray_config() {
   "inbounds": [
     {
       "listen": "0.0.0.0",
-      "port": 8449,
+      "port": ${VLESS_PORT},
       "protocol": "vless",
       "settings": {
         "decryption": "none",
@@ -766,8 +827,8 @@ setup_openvpn() {
   fi
   section "Configuring OpenVPN"
   if [ ! -f /etc/openvpn/server/server.conf ]; then
-    cat > /etc/openvpn/server/server.conf <<'EOF'
-port 1194
+    cat > /etc/openvpn/server/server.conf <<EOF
+port ${OPENVPN_PORT}
 proto udp
 dev tun
 user nobody
@@ -953,7 +1014,7 @@ enable_unit_if_exists() {
   local unit="$1"
   if systemctl cat "$unit" >/dev/null 2>&1; then
     systemctl enable --now "$unit" >/dev/null 2>&1 || true
-    log "enabled: $unit"
+    ok "enabled: $unit"
   fi
 }
 
@@ -1006,19 +1067,19 @@ print_summary() {
   log "Panel user:         ${PANEL_USER}"
   log "Panel password:     ${PANEL_PASS}"
   if is_true "$INSTALL_AMNEZIAWG"; then
-    log "AmneziaWG:          udp/${PANEL_ENDPOINT##*:} on ${PANEL_PUBLIC_HOST}"
+    log "AmneziaWG:          udp/${AMNEZIAWG_PORT} on ${PANEL_PUBLIC_HOST}"
   fi
   if is_true "$INSTALL_WIREGUARD"; then
-    log "WireGuard:          udp/${PANEL_WG_ENDPOINT##*:} on ${PANEL_PUBLIC_HOST}"
+    log "WireGuard:          udp/${WIREGUARD_PORT} on ${PANEL_PUBLIC_HOST}"
   fi
   if is_true "$INSTALL_OPENVPN"; then
-    log "OpenVPN:            udp/1194 on ${PANEL_PUBLIC_HOST}"
+    log "OpenVPN:            udp/${OPENVPN_PORT} on ${PANEL_PUBLIC_HOST}"
   fi
   if is_true "$INSTALL_HYSTERIA"; then
-    log "Hysteria:           udp/8448 on ${PANEL_PUBLIC_HOST}"
+    log "Hysteria:           udp/${HYSTERIA_PORT} on ${PANEL_PUBLIC_HOST}"
   fi
   if is_true "$INSTALL_VLESS"; then
-    log "VLESS Reality:      tcp/8449 on ${PANEL_PUBLIC_HOST}"
+    log "VLESS Reality:      tcp/${VLESS_PORT} on ${PANEL_PUBLIC_HOST}"
   fi
   if is_true "$INSTALL_SOFTETHER"; then
     log "SoftEther / SSTP:   tcp/${PANEL_SSTP_PORT} on ${PANEL_PUBLIC_HOST}"
@@ -1031,6 +1092,7 @@ print_summary() {
 main() {
   need_root
   apt_supported || fail "This installer currently supports Debian/Ubuntu with apt"
+  banner
   WAN_IFACE="$(default_iface)"
   [ -n "$WAN_IFACE" ] || WAN_IFACE="eth0"
 
