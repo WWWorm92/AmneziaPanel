@@ -22,7 +22,9 @@ else
 fi
 
 banner() {
-  printf '%b\n' "${C_BLUE}${C_BOLD}Amnezia Panel Portable Installer${C_RESET}"
+  printf '%b\n' "${C_BLUE}${C_BOLD}╔════════════════════════════════════════════════════════════╗${C_RESET}"
+  printf '%b\n' "${C_BLUE}${C_BOLD}║                 Amnezia Panel Portable Installer         ║${C_RESET}"
+  printf '%b\n' "${C_BLUE}${C_BOLD}╚════════════════════════════════════════════════════════════╝${C_RESET}"
   printf '%b\n' "${C_DIM}Panel + VPN stack bootstrap for Ubuntu/Debian${C_RESET}"
 }
 
@@ -32,6 +34,33 @@ log() {
 
 section() {
   printf '\n%b\n' "${C_BLUE}${C_BOLD}== $* ==${C_RESET}"
+}
+
+divider() {
+  printf '%b\n' "${C_DIM}────────────────────────────────────────────────────────────${C_RESET}"
+}
+
+kv() {
+  printf '%b %-20s%b %s\n' "${C_DIM}" "$1" "${C_RESET}" "$2"
+}
+
+box() {
+  local title="$1"
+  shift
+  printf '%b\n' "${C_BLUE}┌─ ${C_BOLD}${title}${C_RESET}${C_BLUE} ─────────────────────────────────────────────┐${C_RESET}"
+  while [ "$#" -gt 0 ]; do
+    printf '│ %b%-56s%b │\n' "${C_RESET}" "$1" "${C_RESET}"
+    shift
+  done
+  printf '%b\n' "${C_BLUE}└──────────────────────────────────────────────────────────┘${C_RESET}"
+}
+
+STEP_CURRENT=0
+STEP_TOTAL=12
+
+step() {
+  STEP_CURRENT=$((STEP_CURRENT + 1))
+  printf '\n%b\n' "${C_GREEN}${C_BOLD}[${STEP_CURRENT}/${STEP_TOTAL}]${C_RESET} ${C_BOLD}$*${C_RESET}"
 }
 
 ok() {
@@ -91,13 +120,13 @@ prompt_yes_no() {
     return
   fi
   if is_true "$current"; then
-    read -r -p "$prompt [Y/n]: " answer || true
+    read -r -p "$(printf '%b' "${C_BLUE}?${C_RESET} ${prompt} ${C_DIM}[Y/n]${C_RESET}: ")" answer || true
     case "$answer" in
       n|N|no|NO) current="no" ;;
       *) current="yes" ;;
     esac
   else
-    read -r -p "$prompt [y/N]: " answer || true
+    read -r -p "$(printf '%b' "${C_BLUE}?${C_RESET} ${prompt} ${C_DIM}[y/N]${C_RESET}: ")" answer || true
     case "$answer" in
       y|Y|yes|YES) current="yes" ;;
       *) current="no" ;;
@@ -116,7 +145,7 @@ prompt_value() {
     printf -v "$var_name" '%s' "$current"
     return
   fi
-  read -r -p "$prompt [$current]: " answer || true
+  read -r -p "$(printf '%b' "${C_BLUE}>${C_RESET} ${prompt} ${C_DIM}[${current}]${C_RESET}: ")" answer || true
   if [ -n "$answer" ]; then
     current="$answer"
   fi
@@ -125,16 +154,17 @@ prompt_value() {
 
 print_plan() {
   section "Install Plan"
-  log "Panel core:        ${INSTALL_PANEL_CORE}"
-  log "Fail2Ban:          ${INSTALL_FAIL2BAN}"
-  log "AmneziaWG:         ${INSTALL_AMNEZIAWG} ${C_DIM}(udp/${AMNEZIAWG_PORT})${C_RESET}"
-  log "WireGuard:         ${INSTALL_WIREGUARD} ${C_DIM}(udp/${WIREGUARD_PORT})${C_RESET}"
-  log "OpenVPN:           ${INSTALL_OPENVPN} ${C_DIM}(udp/${OPENVPN_PORT})${C_RESET}"
-  log "Hysteria 2:        ${INSTALL_HYSTERIA} ${C_DIM}(udp/${HYSTERIA_PORT})${C_RESET}"
-  log "VLESS / Xray:      ${INSTALL_VLESS} ${C_DIM}(tcp/${VLESS_PORT})${C_RESET}"
-  log "SoftEther / SSTP:  ${INSTALL_SOFTETHER} ${C_DIM}(tcp/${PANEL_SSTP_PORT})${C_RESET}"
-  log "EMQX:              ${INSTALL_EMQX}"
-  log "Office backup:     ${INSTALL_OFFICE_BACKUP}"
+  kv "Panel core" "$INSTALL_PANEL_CORE"
+  kv "Fail2Ban" "$INSTALL_FAIL2BAN"
+  kv "AmneziaWG" "$INSTALL_AMNEZIAWG (udp/${AMNEZIAWG_PORT})"
+  kv "WireGuard" "$INSTALL_WIREGUARD (udp/${WIREGUARD_PORT})"
+  kv "OpenVPN" "$INSTALL_OPENVPN (udp/${OPENVPN_PORT})"
+  kv "Hysteria 2" "$INSTALL_HYSTERIA (udp/${HYSTERIA_PORT})"
+  kv "VLESS / Xray" "$INSTALL_VLESS (tcp/${VLESS_PORT})"
+  kv "SoftEther / SSTP" "$INSTALL_SOFTETHER (tcp/${PANEL_SSTP_PORT})"
+  kv "EMQX" "$INSTALL_EMQX"
+  kv "Office backup" "$INSTALL_OFFICE_BACKUP"
+  divider
 }
 
 configure_components() {
@@ -181,6 +211,10 @@ configure_components() {
 
   if [ -t 0 ] && ! is_true "${NONINTERACTIVE:-}"; then
     section "Component Selection"
+    box "Profile" \
+      "Choose which services to deploy on this host." \
+      "Disabled modules will also be hidden in panel navigation." \
+      "Ports are requested only for enabled VPN components."
     prompt_yes_no INSTALL_PANEL_CORE "Install web panel core" "yes"
     prompt_yes_no INSTALL_FAIL2BAN "Install Fail2Ban" "yes"
     prompt_yes_no INSTALL_AMNEZIAWG "Install AmneziaWG" "yes"
@@ -267,8 +301,8 @@ collect_packages() {
 install_packages() {
   local package_list
   package_list="$(collect_packages | xargs)"
+  step "Installing system packages"
   export DEBIAN_FRONTEND=noninteractive
-  section "Installing Packages"
   apt-get update
   apt-get install -y $package_list
   ok "Packages installed"
@@ -285,7 +319,7 @@ ensure_amnezia_repo() {
   if [ "${ID:-}" != "ubuntu" ]; then
     fail "Automatic amneziawg-tools install is currently implemented for Ubuntu only"
   fi
-  section "Installing AmneziaWG Tools"
+  step "Installing AmneziaWG tools"
   apt-get install -y software-properties-common gnupg
   add-apt-repository -y ppa:amnezia/ppa
   apt-get update
@@ -299,7 +333,7 @@ ensure_emqx_repo() {
   if dpkg -s emqx-enterprise >/dev/null 2>&1; then
     return
   fi
-  section "Adding EMQX Repository"
+  step "Adding EMQX repository"
   curl -fsSL https://packagecloud.io/install/repositories/emqx/emqx-enterprise5/script.deb.sh | bash
   apt-get update
 }
@@ -308,7 +342,7 @@ install_xray() {
   if ! is_true "$INSTALL_VLESS"; then
     return
   fi
-  section "Installing Xray"
+  step "Installing Xray"
   local tmpdir=/tmp/opencode/xray-install
   mkdir -p "$tmpdir"
   if [ ! -x /usr/local/bin/xray ]; then
@@ -323,7 +357,7 @@ install_hysteria() {
   if ! is_true "$INSTALL_HYSTERIA"; then
     return
   fi
-  section "Installing Hysteria"
+  step "Installing Hysteria"
   if [ ! -x /usr/local/bin/hysteria ]; then
     curl -fsSL --retry 5 --retry-delay 2 https://github.com/apernet/hysteria/releases/download/app/v2.9.2/hysteria-linux-amd64 -o /usr/local/bin/hysteria
     chmod 0755 /usr/local/bin/hysteria
@@ -394,7 +428,7 @@ load_env() {
 }
 
 write_sysctl() {
-  section "Enabling IP Forwarding"
+  step "Enabling IP forwarding"
   cat > /etc/sysctl.d/99-amnezia-panel.conf <<'EOF'
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 1
@@ -493,7 +527,7 @@ selected_panel_ports() {
 }
 
 write_service_units() {
-  section "Writing Service Units"
+  step "Writing service units"
 
   if is_true "$INSTALL_PANEL_CORE"; then
     cat > /etc/systemd/system/amnezia-panel.service <<'EOF'
@@ -640,7 +674,7 @@ ensure_fail2ban() {
   if ! is_true "$INSTALL_FAIL2BAN"; then
     return
   fi
-  section "Configuring Fail2Ban"
+  step "Configuring Fail2Ban"
   cat > /etc/fail2ban/jail.local <<'EOF'
 [DEFAULT]
 bantime = 1h
@@ -657,7 +691,7 @@ generate_awg_server() {
   if ! is_true "$INSTALL_AMNEZIAWG"; then
     return
   fi
-  section "Configuring AmneziaWG"
+  step "Configuring AmneziaWG"
   if [ ! -f /etc/amnezia/amneziawg/awg0.key ]; then
     umask 077
     awg genkey > /etc/amnezia/amneziawg/awg0.key
@@ -695,7 +729,7 @@ generate_wg_server() {
   if ! is_true "$INSTALL_WIREGUARD"; then
     return
   fi
-  section "Configuring WireGuard"
+  step "Configuring WireGuard"
   if [ ! -f /etc/wireguard/wg0.key ]; then
     umask 077
     wg genkey > /etc/wireguard/wg0.key
@@ -722,7 +756,7 @@ ensure_hysteria_config() {
   if ! is_true "$INSTALL_HYSTERIA"; then
     return
   fi
-  section "Configuring Hysteria"
+  step "Configuring Hysteria"
   if [ ! -f /etc/hysteria/server.crt ] || [ ! -f /etc/hysteria/server.key ]; then
     openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout /etc/hysteria/server.key -out /etc/hysteria/server.crt -subj "/CN=${PANEL_PUBLIC_HOST}"
     chmod 600 /etc/hysteria/server.key
@@ -753,7 +787,7 @@ ensure_xray_config() {
   if ! is_true "$INSTALL_VLESS"; then
     return
   fi
-  section "Configuring VLESS / Xray"
+  step "Configuring VLESS / Xray"
   local keypair private_key public_key
   if [ ! -f /etc/xray/reality.key ] || [ ! -f /etc/xray/reality.pub ]; then
     keypair="$(xray x25519)"
@@ -825,7 +859,7 @@ setup_openvpn() {
   if ! is_true "$INSTALL_OPENVPN"; then
     return
   fi
-  section "Configuring OpenVPN"
+  step "Configuring OpenVPN"
   if [ ! -f /etc/openvpn/server/server.conf ]; then
     cat > /etc/openvpn/server/server.conf <<EOF
 port ${OPENVPN_PORT}
@@ -876,7 +910,7 @@ setup_softether() {
   if ! is_true "$INSTALL_SOFTETHER"; then
     return
   fi
-  section "Configuring SoftEther / SSTP"
+  step "Configuring SoftEther / SSTP"
   if ! systemctl cat softether-vpnserver.service >/dev/null 2>&1; then
     warn "softether-vpnserver.service not found after package install"
     return
@@ -905,7 +939,7 @@ setup_emqx() {
   if ! is_true "$INSTALL_EMQX"; then
     return
   fi
-  section "Installing and Configuring EMQX"
+  step "Installing and configuring EMQX"
   apt-get install -y emqx-enterprise
   local allow_lines=""
   local ip oldifs
@@ -958,7 +992,7 @@ setup_optional_office_backup() {
   [ -n "${OFFICE_SSTP_PASS:-}" ] || fail "OFFICE_SSTP_PASS is required for office backup"
   [ -n "${OFFICE_NAS_SHARE:-}" ] || fail "OFFICE_NAS_SHARE is required for office backup"
 
-  section "Configuring Office SSTP/NAS Backup"
+  step "Configuring office SSTP/NAS backup"
   local route_ip mount_point nas_host creds_file
   mount_point="${OFFICE_NAS_MOUNT:-/mnt/office-nas}"
   nas_host="$(printf '%s' "$OFFICE_NAS_SHARE" | sed 's#^//##' | cut -d/ -f1)"
@@ -1019,7 +1053,7 @@ enable_unit_if_exists() {
 }
 
 start_selected_units() {
-  section "Enabling Services"
+  step "Enabling services"
   systemctl daemon-reload
   if is_true "$INSTALL_PANEL_CORE"; then
     enable_unit_if_exists ssh.service
@@ -1063,30 +1097,33 @@ start_selected_units() {
 
 print_summary() {
   section "Summary"
-  log "Panel URL:          http://${PANEL_PUBLIC_HOST}:${PANEL_PORT}"
-  log "Panel user:         ${PANEL_USER}"
-  log "Panel password:     ${PANEL_PASS}"
+  box "Connection Sheet" \
+    "Panel URL:        http://${PANEL_PUBLIC_HOST}:${PANEL_PORT}" \
+    "Panel user:       ${PANEL_USER}" \
+    "Panel password:   ${PANEL_PASS}"
   if is_true "$INSTALL_AMNEZIAWG"; then
-    log "AmneziaWG:          udp/${AMNEZIAWG_PORT} on ${PANEL_PUBLIC_HOST}"
+    kv "AmneziaWG" "udp/${AMNEZIAWG_PORT} on ${PANEL_PUBLIC_HOST}"
   fi
   if is_true "$INSTALL_WIREGUARD"; then
-    log "WireGuard:          udp/${WIREGUARD_PORT} on ${PANEL_PUBLIC_HOST}"
+    kv "WireGuard" "udp/${WIREGUARD_PORT} on ${PANEL_PUBLIC_HOST}"
   fi
   if is_true "$INSTALL_OPENVPN"; then
-    log "OpenVPN:            udp/${OPENVPN_PORT} on ${PANEL_PUBLIC_HOST}"
+    kv "OpenVPN" "udp/${OPENVPN_PORT} on ${PANEL_PUBLIC_HOST}"
   fi
   if is_true "$INSTALL_HYSTERIA"; then
-    log "Hysteria:           udp/${HYSTERIA_PORT} on ${PANEL_PUBLIC_HOST}"
+    kv "Hysteria" "udp/${HYSTERIA_PORT} on ${PANEL_PUBLIC_HOST}"
   fi
   if is_true "$INSTALL_VLESS"; then
-    log "VLESS Reality:      tcp/${VLESS_PORT} on ${PANEL_PUBLIC_HOST}"
+    kv "VLESS Reality" "tcp/${VLESS_PORT} on ${PANEL_PUBLIC_HOST}"
   fi
   if is_true "$INSTALL_SOFTETHER"; then
-    log "SoftEther / SSTP:   tcp/${PANEL_SSTP_PORT} on ${PANEL_PUBLIC_HOST}"
+    kv "SoftEther / SSTP" "tcp/${PANEL_SSTP_PORT} on ${PANEL_PUBLIC_HOST}"
   fi
   if is_true "$INSTALL_EMQX"; then
-    log "EMQX dashboard:     http://${PANEL_PUBLIC_HOST}:18083"
+    kv "EMQX dashboard" "http://${PANEL_PUBLIC_HOST}:18083"
   fi
+  divider
+  ok "Installer finished successfully"
 }
 
 main() {
