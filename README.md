@@ -1,112 +1,128 @@
-# Amnezia Panel Portable
+# AmneziaPanel
 
-## What It Does
+Набор скриптов для быстрой установки VPN-сервисов и небольшой панели управления на Debian или Ubuntu.
 
-One-shot installer for a self-hosted panel stack on Debian/Ubuntu with:
+Проект появился из практической задачи: нужно было развернуть на одном сервере несколько VPN-протоколов, не повторяя каждый раз одну и ту же ручную настройку. Установщик можно запускать в интерактивном режиме или передавать параметры через переменные окружения.
 
-- AmneziaWG
-- WireGuard
-- OpenVPN
-- Hysteria 2
-- VLESS Reality (Xray)
-- SoftEther / SSTP
-- EMQX
-- Fail2Ban
-- Web panel
+## Что можно установить
 
-## Usage
+- AmneziaWG;
+- WireGuard;
+- OpenVPN;
+- Hysteria 2;
+- VLESS Reality на базе Xray;
+- SoftEther и SSTP;
+- EMQX;
+- Fail2Ban;
+- web-панель;
+- дополнительный сценарий резервного копирования на NAS.
 
-Run as root:
+Необязательно устанавливать все компоненты. Каждый модуль можно включить или отключить отдельно.
+
+## Перед запуском
+
+Скрипт рассчитан на системы с `apt` и требует права root. Лучше использовать чистую виртуальную машину или VPS и сделать snapshot перед установкой.
+
+Проверьте, что выбранные порты свободны и разрешены в firewall и панели хостинг-провайдера.
+
+## Интерактивная установка
+
+Файлы `install.sh`, `uninstall.sh` и `panel2.py` должны находиться в одном каталоге.
 
 ```bash
 chmod +x install.sh
-./install.sh
+sudo ./install.sh
 ```
 
-By default the installer is interactive and asks what to install.
-It also asks which ports to use for each selected VPN module.
+Установщик спросит, какие компоненты нужны, и предложит указать порты.
 
-For unattended mode use env flags:
+## Установка без вопросов
+
+Для автоматического развёртывания используйте `NONINTERACTIVE=1` и передайте параметры заранее:
 
 ```bash
-NONINTERACTIVE=1 \
-PANEL_PUBLIC_HOST=1.2.3.4 \
-PANEL_USER=admin \
-PANEL_PASS='strongpass' \
-INSTALL_SOFTETHER=no \
-INSTALL_EMQX=no \
-./install.sh
+sudo env \
+  NONINTERACTIVE=1 \
+  PANEL_PUBLIC_HOST=1.2.3.4 \
+  PANEL_USER=admin \
+  PANEL_PASS='change-this-password' \
+  INSTALL_SOFTETHER=no \
+  INSTALL_EMQX=no \
+  ./install.sh
 ```
 
-Component flags:
+Доступные флаги компонентов:
 
-- `INSTALL_PANEL_CORE=yes|no`
-- `INSTALL_FAIL2BAN=yes|no`
-- `INSTALL_AMNEZIAWG=yes|no`
-- `INSTALL_WIREGUARD=yes|no`
-- `INSTALL_OPENVPN=yes|no`
-- `INSTALL_HYSTERIA=yes|no`
-- `INSTALL_VLESS=yes|no`
-- `INSTALL_SOFTETHER=yes|no`
-- `INSTALL_EMQX=yes|no`
-- `INSTALL_OFFICE_BACKUP=yes|no`
+```text
+INSTALL_PANEL_CORE
+INSTALL_FAIL2BAN
+INSTALL_AMNEZIAWG
+INSTALL_WIREGUARD
+INSTALL_OPENVPN
+INSTALL_HYSTERIA
+INSTALL_VLESS
+INSTALL_SOFTETHER
+INSTALL_EMQX
+INSTALL_OFFICE_BACKUP
+```
 
-Port variables:
+Значения: `yes` или `no`.
 
-- `AMNEZIAWG_PORT`
-- `WIREGUARD_PORT`
-- `OPENVPN_PORT`
-- `HYSTERIA_PORT`
-- `VLESS_PORT`
-- `PANEL_SSTP_PORT`
-- `PANEL_SSTP_ADMIN_PORT`
+Порты можно задать переменными:
 
-Optional backup/NAS bootstrap via SSTP:
+```text
+AMNEZIAWG_PORT
+WIREGUARD_PORT
+OPENVPN_PORT
+HYSTERIA_PORT
+VLESS_PORT
+PANEL_SSTP_PORT
+PANEL_SSTP_ADMIN_PORT
+```
+
+## Резервное копирование на NAS
+
+Дополнительный модуль может подключаться к удалённой сети по SSTP и монтировать SMB-ресурс:
 
 ```bash
-OFFICE_SSTP_HOST=vpn.example.com \
-OFFICE_SSTP_USER=backup \
-OFFICE_SSTP_PASS='secret' \
-OFFICE_NAS_SHARE='//10.0.0.10/Public' \
-OFFICE_NAS_USER=backup \
-OFFICE_NAS_PASS='secret' \
-OFFICE_NAS_MOUNT=/mnt/office-nas \
-./install.sh
+sudo env \
+  OFFICE_SSTP_HOST=vpn.example.com \
+  OFFICE_SSTP_USER=backup \
+  OFFICE_SSTP_PASS='secret' \
+  OFFICE_NAS_SHARE='//10.0.0.10/Public' \
+  OFFICE_NAS_USER=backup \
+  OFFICE_NAS_PASS='secret' \
+  OFFICE_NAS_MOUNT=/mnt/office-nas \
+  ./install.sh
 ```
 
-Optional EMQX public allowlist:
+Этот режим имеет смысл только после проверки маршрутизации, доступности NAS и прав пользователя на запись.
+
+## Ограничение доступа к EMQX
+
+Публичные адреса можно передать списком CIDR:
 
 ```bash
-EMQX_ALLOW_IPS='1.2.3.4/32,5.6.7.8/32' ./install.sh
+sudo env EMQX_ALLOW_IPS='1.2.3.4/32,5.6.7.8/32' ./install.sh
 ```
 
-## Bundle Files
-
-- `install.sh`
-- `uninstall.sh`
-- `panel2.py`
-
-Keep them in the same directory.
-
-## Notes
-
-- Current auto-install path is built for `apt` systems.
-- `amneziawg-tools` auto-install is implemented for Ubuntu.
-- Existing configs are preserved where possible.
-- Office backup bootstrap is optional and requires explicit env variables.
-- Panel navigation hides modules that were disabled at install time.
-
-## Uninstall
-
-Run as root:
+## Удаление
 
 ```bash
 chmod +x uninstall.sh
-./uninstall.sh
+sudo ./uninstall.sh
 ```
 
-It can:
+Скрипт умеет остановить службы, удалить созданные файлы и при необходимости удалить установленные пакеты. Перед подтверждением внимательно проверьте список действий, особенно на сервере, где уже были собственные настройки.
 
-- stop and disable services
-- remove generated files
-- optionally purge packages
+## Что важно учитывать
+
+- автоматическая установка `amneziawg-tools` ориентирована прежде всего на Ubuntu;
+- существующие конфигурации по возможности сохраняются, но универсально гарантировать это нельзя;
+- проект не заменяет настройку firewall, DNS и правил доступа у провайдера;
+- после установки нужно проверить каждый протокол отдельно;
+- пароли и ключи нельзя хранить в истории shell, публичных логах или репозитории.
+
+## Состояние проекта
+
+Это рабочий инструмент для собственных установок, а не универсальная панель хостинг-провайдера. Разные версии Debian, Ubuntu и сторонних пакетов могут вести себя по-разному, поэтому перед использованием в production установку стоит проверить на тестовой машине.
