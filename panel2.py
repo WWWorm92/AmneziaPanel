@@ -154,6 +154,22 @@ def icon(name):
     return icons.get(name, icons["dashboard"])
 
 
+def favicon_href():
+    svg = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>
+  <defs>
+    <linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>
+      <stop offset='0%' stop-color='#7c5cff'/>
+      <stop offset='55%' stop-color='#4c7dff'/>
+      <stop offset='100%' stop-color='#12d6ff'/>
+    </linearGradient>
+  </defs>
+  <rect width='64' height='64' rx='18' fill='#0b0f16'/>
+  <rect x='8' y='8' width='48' height='48' rx='15' fill='url(#g)'/>
+  <path d='M20 24h24M20 32h18M20 40h14' stroke='#fff' stroke-width='5' stroke-linecap='round'/>
+</svg>"""
+    return "data:image/svg+xml," + quote(svg, safe="")
+
+
 DEFAULT_SETTINGS = {
     "features": {
         "amneziawg": True,
@@ -611,6 +627,16 @@ def parse_wg_show(iface):
     if current:
         peers.append(current)
     return server_pub, peers
+
+
+def parse_transfer_bytes(text):
+    text = str(text or "").strip()
+    if not text or text == "-":
+        return None, None
+    m = re.search(r"([0-9.]+)\s*([KMGT]?i?B)\s*received,\s*([0-9.]+)\s*([KMGT]?i?B)\s*sent", text, re.I)
+    if not m:
+        return None, None
+    return bytes_from_human(f"{m.group(1)} {m.group(2)}"), bytes_from_human(f"{m.group(3)} {m.group(4)}")
 
 
 def ensure_wireguard_server_config():
@@ -1585,7 +1611,7 @@ def request_is_authed(headers):
 
 def login_page(error="", next_path="/"):
     return f"""<!doctype html>
-<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
+<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><link rel='icon' type='image/svg+xml' href='{favicon_href()}'>
 <title>Вход в панель</title>
 <style>
 :root {{ color-scheme: dark; --bg:#111318; --panel:#1a1d24; --panel2:#202531; --line:#2d3441; --text:#edf2ff; --muted:#95a0b5; --green:#7c5cff; --green2:#4c7dff; --danger:#ff647c; }}
@@ -1643,7 +1669,7 @@ input:focus {{ border-color: rgba(24,211,155,.65); box-shadow: 0 0 0 4px rgba(24
 
 def totp_login_page(username, error="", next_path="/"):
     return f"""<!doctype html>
-<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
+<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><link rel='icon' type='image/svg+xml' href='{favicon_href()}'>
 <title>Google Authenticator</title>
 <style>
 :root {{ color-scheme: dark; --bg:#111318; --panel:#1a1d24; --line:#2d3441; --text:#edf2ff; --muted:#95a0b5; --green:#7c5cff; --green2:#4c7dff; --danger:#ff647c; }}
@@ -1979,9 +2005,15 @@ html, body { width:100%; max-width:100%; overflow-x:hidden; }
 }
 .ops-hero { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(280px,.75fr); gap:16px; padding:22px; border:1px solid rgba(160,171,192,.18); border-radius:28px; background: radial-gradient(circle at 18% 8%, rgba(124,92,255,.28), transparent 36%), linear-gradient(135deg, rgba(29,36,57,.96), rgba(13,17,29,.96)); box-shadow:0 22px 70px rgba(0,0,0,.28); }
 .ops-hero.summary-only { grid-template-columns:1fr; }
+.ops-headline { display:grid; gap:10px; }
 .ops-eyebrow { display:inline-flex; padding:8px 11px; border-radius:999px; background:rgba(124,92,255,.16); border:1px solid rgba(124,92,255,.28); color:#d9d2ff; font-size:12px; text-transform:uppercase; letter-spacing:.12em; }
-.ops-headline h1 { margin:18px 0 10px; font-size:44px; line-height:.98; letter-spacing:-.06em; max-width:680px; }
+.ops-headline h1 { margin:8px 0 0; font-size:44px; line-height:.98; letter-spacing:-.06em; max-width:680px; }
 .ops-headline p { margin:0; color:#afbad0; font-size:16px; line-height:1.55; max-width:640px; }
+.ops-mini-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:8px; }
+.ops-mini-card { padding:14px 15px; border-radius:18px; border:1px solid rgba(160,171,192,.16); background:rgba(9,12,20,.38); }
+.ops-mini-card span { display:block; color:#aeb9d3; font-size:12px; letter-spacing:.08em; text-transform:uppercase; }
+.ops-mini-card strong { display:block; margin-top:10px; font-size:24px; line-height:1; letter-spacing:-.04em; color:#f0f3ff; }
+.ops-mini-card em { display:block; margin-top:6px; color:#9ca8bd; font-style:normal; font-size:13px; overflow-wrap:anywhere; }
 .ops-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:22px; }
 .ops-health { display:grid; gap:10px; align-content:center; }
 .summary-cards { grid-template-columns:repeat(4,minmax(0,1fr)); margin-top:18px; }
@@ -2016,6 +2048,7 @@ html, body { width:100%; max-width:100%; overflow-x:hidden; }
 @media (max-width:900px) {
   .side-brand { display:none; }
   .ops-hero, .ops-split, .ops-grid { grid-template-columns:1fr; }
+  .ops-mini-grid { grid-template-columns:1fr; }
   .summary-cards { grid-template-columns:1fr; }
   .manage-grid { grid-template-columns:1fr; }
   .logout-top { padding:9px; font-size:0; }
@@ -2883,11 +2916,38 @@ def parse_handshake_age(text):
     return total if matched else None
 
 
-def peer_connection_state(peer, connected_after=300):
+def bytes_from_human(text):
+    text = str(text or "").strip()
+    if not text:
+        return 0
+    m = re.match(r"^([0-9.]+)\s*([KMGT]?i?B)$", text, re.I)
+    if not m:
+        return 0
+    value = float(m.group(1))
+    unit = m.group(2).upper()
+    scale = {
+        "B": 1,
+        "KB": 1000,
+        "KIB": 1024,
+        "MB": 1000 ** 2,
+        "MIB": 1024 ** 2,
+        "GB": 1000 ** 3,
+        "GIB": 1024 ** 3,
+        "TB": 1000 ** 4,
+        "TIB": 1024 ** 4,
+    }.get(unit, 1)
+    return int(value * scale)
+
+
+def peer_connection_state(peer, connected_after=45, transfer_window_bytes=0):
     handshake = peer.get("latest_handshake", "")
     age = parse_handshake_age(handshake)
     endpoint = (peer.get("endpoint") or "").strip()
-    connected = age is not None and age <= connected_after
+    received, sent = parse_transfer_bytes(peer.get("transfer", ""))
+    recent_transfer = False
+    if received is not None and sent is not None:
+        recent_transfer = (received > transfer_window_bytes) or (sent > transfer_window_bytes)
+    connected = recent_transfer or (age is not None and age <= connected_after)
     if connected:
         status = "подключён"
         status_class = "good"
@@ -2898,6 +2958,7 @@ def peer_connection_state(peer, connected_after=300):
         "status": status,
         "status_class": status_class,
         "age": age,
+        "recent_transfer": recent_transfer,
         "handshake": handshake or "нет рукопожатия",
         "endpoint": endpoint or "-",
         "last_seen": handshake or "-",
@@ -3395,7 +3456,7 @@ def build_shell(page_title, active_page, body_html, message="", error=""):
     sidebar_nav = "".join(sidebar_parts)
     mobile_nav = "".join(mobile_parts)
     return f"""<!doctype html>
-<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><title>{html.escape(page_title)}</title>
+<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><link rel='icon' type='image/svg+xml' href='{favicon_href()}'><title>{html.escape(page_title)}</title>
 <style>{dashboard_css()}</style></head><body>
 <div class='drawer-backdrop' onclick='toggleDrawer(false)'></div>
 <aside class='mobile-drawer' aria-label='Мобильное меню'>
@@ -3553,20 +3614,31 @@ function updateMtprotoStatus(root, payload) {{
   }}
 }}
 async function refreshVpnStatuses() {{
-  const roots = document.querySelectorAll('[data-vpn-tab]');
-  for (const root of roots) {{
-    const tab = root.getAttribute('data-vpn-tab');
-    if (!tab) continue;
-    try {{
-      const res = await fetch('/api/vpn-status?tab=' + encodeURIComponent(tab), {{ cache: 'no-store' }});
-      if (!res.ok) continue;
-      updateVpnStatus(root, await res.json());
-    }} catch (e) {{}}
+  if (window.__vpnStatusRefreshRunning) return;
+  window.__vpnStatusRefreshRunning = true;
+  try {{
+    const roots = document.querySelectorAll('[data-vpn-tab]');
+    for (const root of roots) {{
+      const tab = root.getAttribute('data-vpn-tab');
+      if (!tab) continue;
+      try {{
+        const res = await fetch('/api/vpn-status?tab=' + encodeURIComponent(tab), {{ cache: 'no-store' }});
+        if (!res.ok) continue;
+        updateVpnStatus(root, await res.json());
+      }} catch (e) {{}}
+    }}
+  }} finally {{
+    window.__vpnStatusRefreshRunning = false;
   }}
 }}
 if (document.querySelector('[data-vpn-tab]')) {{
   refreshVpnStatuses();
-  setInterval(refreshVpnStatuses, 5000);
+  setInterval(function() {{
+    if (!document.hidden) refreshVpnStatuses();
+  }}, 1000);
+  document.addEventListener('visibilitychange', function() {{
+    if (!document.hidden) refreshVpnStatuses();
+  }});
 }}
 async function refreshMtprotoStatus() {{
   const root = document.querySelector('[data-mtproto-root]');
@@ -3649,16 +3721,63 @@ def summary_cards(snapshot, metrics, services, peers, managed_count, legacy_coun
     service_map = {s["name"]: s for s in services}
     awg = service_map.get("awg", {"active": "unknown", "enabled": "unknown", "unit": ""})
     wireguard = service_map.get("wireguard", {"active": "unknown", "enabled": "unknown", "unit": ""})
+    office_sstp = service_status("office-sstp")
+
+    awg_connected = sum(1 for peer in peers if peer.get("managed") and peer.get("enabled", True) and peer.get("status") == "подключён")
+    awg_total = len(peers)
+
+    try:
+        _, wg_peers = parse_wg_show(CFG["wireguard_iface"])
+    except Exception:
+        wg_peers = []
+    wg_peer_by_key = {peer.get("public_key"): peer for peer in wg_peers}
+    wg_clients = load_wireguard_clients()
+    wg_connected = 0
+    for client in wg_clients:
+        peer = wg_peer_by_key.get(client.get("public_key"))
+        if client.get("enabled", True) and peer and peer_connection_state(peer).get("status") == "подключён":
+            wg_connected += 1
+    wg_total = len(wg_clients)
+
+    openvpn_clients = load_openvpn_clients(sync_profiles=False)
+    openvpn_states = openvpn_client_states()
+    openvpn_connected = sum(1 for client in openvpn_clients if client.get("enabled", True) and openvpn_states.get(client.get("name")) == "подключён")
+    openvpn_total = len(openvpn_clients)
+
+    hysteria_clients = load_hysteria_clients()
+    hysteria_states = hysteria_client_states()
+    hysteria_connected = sum(1 for client in hysteria_clients if client.get("enabled", True) and hysteria_states.get(client.get("username")) == "подключён")
+    hysteria_total = len(hysteria_clients)
+
+    vless_clients = load_vless_clients()
+    vless_states = xray_client_states()
+    vless_connected = sum(1 for client in vless_clients if client.get("enabled", True) and vless_states.get(client.get("name")) == "подключён")
+    vless_total = len(vless_clients)
+
+    total_connected = awg_connected + wg_connected + openvpn_connected + hysteria_connected + vless_connected
+    total_clients = awg_total + wg_total + openvpn_total + hysteria_total + vless_total
+    endpoint = html.escape(public_endpoint(CFG['endpoint'].split(':', 1)[1] if ':' in CFG['endpoint'] else '443'))
+    office_sstp_status = html.escape(status_map.get(office_sstp['active'], office_sstp['active']))
     return f"""
     <section class='ops-hero summary-only'>
       <div class='ops-headline'>
         <span class='ops-eyebrow'>server control center</span>
         <h1>Краткая сводка</h1>
+        <div class='ops-mini-grid'>
+          <div class='ops-mini-card'><span>Все VPN</span><strong>{total_connected}/{total_clients}</strong></div>
+          <div class='ops-mini-card'><span>AmneziaWG</span><strong>{awg_connected}/{awg_total}</strong></div>
+          <div class='ops-mini-card'><span>WireGuard</span><strong>{wg_connected}/{wg_total}</strong></div>
+          <div class='ops-mini-card'><span>OpenVPN</span><strong>{openvpn_connected}/{openvpn_total}</strong></div>
+          <div class='ops-mini-card'><span>Hysteria</span><strong>{hysteria_connected}/{hysteria_total}</strong></div>
+          <div class='ops-mini-card'><span>VLESS</span><strong>{vless_connected}/{vless_total}</strong></div>
+          <div class='ops-mini-card'><span>Office SSTP</span><strong>{office_sstp_status}</strong></div>
+          <div class='ops-mini-card'><span>Endpoint</span><strong>{endpoint}</strong></div>
+        </div>
         <div class='ops-health summary-cards'>
           <div class='ops-health-row'><span>AmneziaWG</span><strong class='{'good' if awg['active'] == 'active' else 'bad'}'>{html.escape(status_map.get(awg['active'], awg['active']))}</strong></div>
           <div class='ops-health-row'><span>WireGuard</span><strong class='{'good' if wireguard['active'] == 'active' else 'bad'}'>{html.escape(status_map.get(wireguard['active'], wireguard['active']))}</strong></div>
-          <div class='ops-health-row'><span>SSTP</span><strong class='{'good' if service_map.get('softether', {'active': 'unknown'})['active'] == 'active' else 'bad'}'>{html.escape(status_map.get(service_map.get('softether', {'active': 'unknown'})['active'], service_map.get('softether', {'active': 'unknown'})['active']))}</strong></div>
-          <div class='ops-health-row'><span>Endpoint</span><strong>{html.escape(public_endpoint(CFG['endpoint'].split(':', 1)[1] if ':' in CFG['endpoint'] else '443'))}</strong></div>
+          <div class='ops-health-row'><span>Office SSTP</span><strong class='{'good' if office_sstp['active'] == 'active' else 'bad'}'>{office_sstp_status}</strong></div>
+          <div class='ops-health-row'><span>Endpoint</span><strong>{endpoint}</strong></div>
         </div>
       </div>
     </section>
@@ -3668,7 +3787,7 @@ def summary_cards(snapshot, metrics, services, peers, managed_count, legacy_coun
 def build_home():
     snapshot = system_snapshot()
     metrics = collect_metrics()
-    services = [service_status(k) for k in ["awg", "wireguard", "openvpn", "softether", "panel", "vpn-iptables", "openvpn-iptables"] if k in SERVICE_MAP]
+    services = [service_status(k) for k in ["awg", "wireguard", "openvpn", "hysteria2", "xray", "office-sstp", "panel", "vpn-iptables", "openvpn-iptables"] if k in SERVICE_MAP]
     _, peers = client_rows()
     managed_count = sum(1 for p in peers if p.get("managed"))
     legacy_count = len(peers) - managed_count
