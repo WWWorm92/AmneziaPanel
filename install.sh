@@ -151,6 +151,33 @@ default_iface() {
   ip route show default 2>/dev/null | awk 'NR==1 {print $5; exit}'
 }
 
+machine_arch() {
+  case "$(dpkg --print-architecture 2>/dev/null || uname -m)" in
+    amd64|x86_64) printf '%s\n' 'amd64' ;;
+    arm64|aarch64) printf '%s\n' 'arm64' ;;
+    armhf|armv7l) printf '%s\n' 'armv7' ;;
+    *) printf '%s\n' 'unknown' ;;
+  esac
+}
+
+xray_asset_name() {
+  case "$(machine_arch)" in
+    amd64) printf '%s\n' 'Xray-linux-64.zip' ;;
+    arm64) printf '%s\n' 'Xray-linux-arm64-v8a.zip' ;;
+    armv7) printf '%s\n' 'Xray-linux-arm32-v7a.zip' ;;
+    *) fail "Unsupported architecture for Xray: $(machine_arch)" ;;
+  esac
+}
+
+hysteria_asset_name() {
+  case "$(machine_arch)" in
+    amd64) printf '%s\n' 'hysteria-linux-amd64' ;;
+    arm64) printf '%s\n' 'hysteria-linux-arm64' ;;
+    armv7) printf '%s\n' 'hysteria-linux-armv7' ;;
+    *) fail "Unsupported architecture for Hysteria: $(machine_arch)" ;;
+  esac
+}
+
 detect_public_ip() {
   local ip
   ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -v '^127\.' | head -n1 || true)"
@@ -331,13 +358,16 @@ configure_components() {
 
 collect_packages() {
   local packages=()
-  packages+=(python3 openssl qrencode iproute2 procps util-linux coreutils rsync tar ca-certificates curl nftables iptables jq unzip cifs-utils)
+  packages+=(python3 openssl qrencode iproute2 procps util-linux coreutils rsync tar ca-certificates curl nftables iptables jq unzip cifs-utils tcpdump wireguard-tools)
 
   if is_true "$INSTALL_PANEL_CORE"; then
     packages+=(cron openssh-server)
   fi
   if is_true "$INSTALL_FAIL2BAN"; then
     packages+=(fail2ban)
+  fi
+  if is_true "$INSTALL_AMNEZIAWG"; then
+    packages+=(wireguard-tools)
   fi
   if is_true "$INSTALL_WIREGUARD"; then
     packages+=(wireguard-tools)
@@ -373,14 +403,17 @@ ensure_amnezia_repo() {
     return
   fi
   . /etc/os-release
-  if [ "${ID:-}" != "ubuntu" ]; then
-    fail "Automatic amneziawg-tools install is currently implemented for Ubuntu only"
+  if [ "${ID:-}" = "ubuntu" ]; then
+    step "Installing AmneziaWG tools"
+    apt-get install -y software-properties-common gnupg
+    add-apt-repository -y ppa:amnezia/ppa
+    apt-get update
+    if apt-cache show amneziawg-tools >/dev/null 2>&1; then
+      apt-get install -y amneziawg-tools
+      return
+    fi
   fi
-  step "Installing AmneziaWG tools"
-  apt-get install -y software-properties-common gnupg
-  add-apt-repository -y ppa:amnezia/ppa
-  apt-get update
-  apt-get install -y amneziawg-tools
+  warn "amneziawg-tools not available; using wg-quick backend for AmneziaWG"
 }
 
 ensure_emqx_repo() {
@@ -403,7 +436,7 @@ install_xray() {
   local tmpdir=/tmp/opencode/xray-install
   mkdir -p "$tmpdir"
   if [ ! -x /usr/local/bin/xray ]; then
-    curl -fsSL --retry 5 --retry-delay 2 https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip -o "$tmpdir/xray.zip"
+    curl -fsSL --retry 5 --retry-delay 2 "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/$(xray_asset_name)" -o "$tmpdir/xray.zip"
     rm -rf "$tmpdir/xray"
     unzip -oq "$tmpdir/xray.zip" -d "$tmpdir/xray"
     install -m 0755 "$tmpdir/xray/xray" /usr/local/bin/xray
@@ -416,7 +449,7 @@ install_hysteria() {
   fi
   step "Installing Hysteria"
   if [ ! -x /usr/local/bin/hysteria ]; then
-    curl -fsSL --retry 5 --retry-delay 2 https://github.com/apernet/hysteria/releases/download/app/v2.9.2/hysteria-linux-amd64 -o /usr/local/bin/hysteria
+    curl -fsSL --retry 5 --retry-delay 2 "https://github.com/apernet/hysteria/releases/download/app/v2.9.2/$(hysteria_asset_name)" -o /usr/local/bin/hysteria
     chmod 0755 /usr/local/bin/hysteria
   fi
 }
@@ -603,6 +636,38 @@ RestartSec=2
 [Install]
 WantedBy=multi-user.target
 EOF
+
+    cat > /etc/systemd/system/vpn-traffic-log.service <<'EOF'
+[Unit]
+Description=VPN traffic logger
+After=network-online.target vpn-iptables.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '/usr/sbin/iptables -w 5 -C FORWARD -s 10.66.67.0/24 -j LOG --log-prefix "VPNTRAFFIC AWG " --log-level 4 2>/dev/null || /usr/sbin/iptables -w 5 -I FORWARD 1 -s 10.66.67.0/24 -j LOG --log-prefix "VPNTRAFFIC AWG " --log-level 4; /usr/sbin/iptables -w 5 -C FORWARD -s 10.77.67.0/24 -j LOG --log-prefix "VPNTRAFFIC WG " --log-level 4 2>/dev/null || /usr/sbin/iptables -w 5 -I FORWARD 1 -s 10.77.67.0/24 -j LOG --log-prefix "VPNTRAFFIC WG " --log-level 4; /usr/sbin/iptables -w 5 -C FORWARD -s 10.8.0.0/24 -j LOG --log-prefix "VPNTRAFFIC OVPN " --log-level 4 2>/dev/null || /usr/sbin/iptables -w 5 -I FORWARD 1 -s 10.8.0.0/24 -j LOG --log-prefix "VPNTRAFFIC OVPN " --log-level 4'
+ExecStop=/bin/sh -c '/usr/sbin/iptables -w 5 -D FORWARD -s 10.66.67.0/24 -j LOG --log-prefix "VPNTRAFFIC AWG " --log-level 4 2>/dev/null || true; /usr/sbin/iptables -w 5 -D FORWARD -s 10.77.67.0/24 -j LOG --log-prefix "VPNTRAFFIC WG " --log-level 4 2>/dev/null || true; /usr/sbin/iptables -w 5 -D FORWARD -s 10.8.0.0/24 -j LOG --log-prefix "VPNTRAFFIC OVPN " --log-level 4 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    cat > /etc/systemd/system/vpn-dns-log.service <<'EOF'
+[Unit]
+Description=VPN DNS traffic logger
+After=network-online.target vpn-iptables.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/tcpdump -i any -nn -l -s0 -vv '(udp port 53 or tcp port 53) and (net 10.66.67.0/24 or net 10.77.67.0/24 or net 10.8.0.0/24)'
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
   fi
 
   if is_true "$INSTALL_AMNEZIAWG"; then
@@ -616,9 +681,9 @@ PartOf=awg-quick.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/awg-quick up %i
-ExecStop=/usr/bin/awg-quick down %i
-ExecReload=/usr/bin/awg-quick save %i
+ExecStart=/bin/sh -c 'if command -v awg-quick >/dev/null 2>&1; then exec awg-quick up %i; else exec wg-quick up %i; fi'
+ExecStop=/bin/sh -c 'if command -v awg-quick >/dev/null 2>&1; then exec awg-quick down %i; else exec wg-quick down %i; fi'
+ExecReload=/bin/sh -c 'if command -v awg-quick >/dev/null 2>&1; then exec awg-quick save %i; else exec wg-quick save %i; fi'
 Environment=WG_ENDPOINT_RESOLUTION_RETRIES=infinity
 
 [Install]
@@ -684,7 +749,7 @@ EOF
     local start_rules stop_rules
     start_rules="$(selected_panel_ports | firewall_exec_lines)"
     stop_rules="$(selected_panel_ports | firewall_stop_lines)"
-    cat > /etc/systemd/system/amnezia-panel-firewall.service <<EOF
+    cat > /etc/systemd/system/vpn-iptables.service <<EOF
 [Unit]
 Description=Open selected panel stack ports
 After=network-online.target
@@ -749,12 +814,21 @@ generate_awg_server() {
     return
   fi
   step "Configuring AmneziaWG"
+  local backend_bin config_extra
+  if command -v awg >/dev/null 2>&1; then
+    backend_bin=awg
+    config_extra=$'Jc = 4\nJmin = 8\nJmax = 80\nS1 = 16\nS2 = 16\nS3 = 16\nS4 = 8\nH1 = 1000-1099\nH2 = 1100-1199\nH3 = 1200-1299\nH4 = 1300-1399\nI1 = <b 0x0800000001><rc 8><t><r 50>\n'
+  else
+    backend_bin=wg
+    config_extra=''
+    warn "awg not found; generating standard WireGuard config for awg0"
+  fi
   if [ ! -f /etc/amnezia/amneziawg/awg0.key ]; then
     umask 077
-    awg genkey > /etc/amnezia/amneziawg/awg0.key
+    "$backend_bin" genkey > /etc/amnezia/amneziawg/awg0.key
   fi
   if [ ! -f /etc/amnezia/amneziawg/awg0.pub ]; then
-    awg pubkey < /etc/amnezia/amneziawg/awg0.key > /etc/amnezia/amneziawg/awg0.pub
+    "$backend_bin" pubkey < /etc/amnezia/amneziawg/awg0.key > /etc/amnezia/amneziawg/awg0.pub
   fi
   if [ ! -f /etc/amnezia/amneziawg/awg0.conf ]; then
     cat > /etc/amnezia/amneziawg/awg0.conf <<EOF
@@ -762,19 +836,7 @@ generate_awg_server() {
 Address = ${PANEL_SERVER_IP}/24
 ListenPort = ${AMNEZIAWG_PORT}
 PrivateKey = $(tr -d '\n' < /etc/amnezia/amneziawg/awg0.key)
-Jc = 4
-Jmin = 8
-Jmax = 80
-S1 = 16
-S2 = 16
-S3 = 16
-S4 = 8
-H1 = 1000-1099
-H2 = 1100-1199
-H3 = 1200-1299
-H4 = 1300-1399
-I1 = <b 0x0800000001><rc 8><t><r 50>
-PostUp = iptables -t nat -A POSTROUTING -s ${PANEL_SUBNET} -o ${WAN_IFACE} -j MASQUERADE
+${config_extra}PostUp = iptables -t nat -A POSTROUTING -s ${PANEL_SUBNET} -o ${WAN_IFACE} -j MASQUERADE
 PostDown = iptables -t nat -D POSTROUTING -s ${PANEL_SUBNET} -o ${WAN_IFACE} -j MASQUERADE
 EOF
     chmod 600 /etc/amnezia/amneziawg/awg0.conf
@@ -974,22 +1036,25 @@ setup_softether() {
   fi
   systemctl enable --now softether-vpnserver.service >/dev/null 2>&1 || true
   local vpncmd
+  local tmpdir
+  tmpdir="$(mktemp -d /tmp/opencode-softether.XXXXXX)"
   vpncmd="$(command -v vpncmd || true)"
   [ -n "$vpncmd" ] || { warn "vpncmd not found"; return; }
-  cat > /tmp/opencode/softether-server.txt <<EOF
+  cat > "$tmpdir/softether-server.txt" <<EOF
 ServerPasswordSet /PASSWORD:${PANEL_SSTP_ADMIN_PASS}
 ListenerCreate ${PANEL_SSTP_ADMIN_PORT}
 ListenerCreate ${PANEL_SSTP_PORT}
 SstpEnable yes
 HubCreate ${PANEL_SSTP_HUB} /PASSWORD:${PANEL_SSTP_HUB_PASS}
 EOF
-  "$vpncmd" localhost /SERVER /IN:/tmp/opencode/softether-server.txt >/dev/null 2>&1 || true
-  cat > /tmp/opencode/softether-hub.txt <<EOF
+  "$vpncmd" localhost /SERVER /IN:"$tmpdir/softether-server.txt" >/dev/null 2>&1 || true
+  cat > "$tmpdir/softether-hub.txt" <<EOF
 SecureNatEnable
 UserCreate ${PANEL_SSTP_USER} /GROUP:none /REALNAME:none /NOTE:none
 UserPasswordSet ${PANEL_SSTP_USER} /PASSWORD:${PANEL_SSTP_HUB_PASS}
 EOF
-  "$vpncmd" localhost /SERVER "/HUB:${PANEL_SSTP_HUB}" "/PASSWORD:${PANEL_SSTP_HUB_PASS}" /IN:/tmp/opencode/softether-hub.txt >/dev/null 2>&1 || true
+  "$vpncmd" localhost /SERVER "/HUB:${PANEL_SSTP_HUB}" "/PASSWORD:${PANEL_SSTP_HUB_PASS}" /IN:"$tmpdir/softether-hub.txt" >/dev/null 2>&1 || true
+  rm -rf "$tmpdir"
 }
 
 setup_emqx() {
@@ -1116,7 +1181,9 @@ start_selected_units() {
     enable_unit_if_exists ssh.service
     enable_unit_if_exists ssh.socket
     enable_unit_if_exists cron.service
-    enable_unit_if_exists amnezia-panel-firewall.service
+    enable_unit_if_exists vpn-iptables.service
+    enable_unit_if_exists vpn-traffic-log.service
+    enable_unit_if_exists vpn-dns-log.service
     enable_unit_if_exists amnezia-panel.service
     enable_unit_if_exists server-panel-backup.timer
   fi

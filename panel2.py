@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import html
 import ipaddress
+import socket
 import json
 import os
 import pwd
@@ -17,9 +18,11 @@ import time
 import tempfile
 import threading
 import uuid
+from functools import lru_cache
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse, quote
 
@@ -52,6 +55,7 @@ CFG["wireguard_clients_file"] = CFG["state_dir"] / "wireguard_clients.json"
 CFG["audit_file"] = CFG["state_dir"] / "audit.log"
 CFG["settings_file"] = CFG["state_dir"] / "settings.json"
 CFG["backup_settings_file"] = CFG["state_dir"] / "backup_settings.json"
+CFG["traffic_log_file"] = CFG["state_dir"] / "traffic.log"
 CFG["backup_dir"] = Path(os.environ.get("PANEL_BACKUP_DIR", "/var/backups/server-panel"))
 CFG["server_pubkey"] = os.environ.get("PANEL_SERVER_PUBKEY", "")
 CFG["wireguard_iface"] = os.environ.get("PANEL_WG_IFACE", "wg0")
@@ -179,6 +183,8 @@ DEFAULT_SETTINGS = {
         "panel": "amnezia-panel.service",
         "vpn-iptables": "vpn-iptables.service",
         "openvpn-iptables": "openvpn-iptables.service",
+        "vpn-traffic-log": "vpn-traffic-log.service",
+        "vpn-dns-log": "vpn-dns-log.service",
         "fail2ban": "fail2ban.service",
     },
     "service_labels": {
@@ -190,6 +196,8 @@ DEFAULT_SETTINGS = {
         "panel": "Панель",
         "vpn-iptables": "Фаервол VPN",
         "openvpn-iptables": "Фаервол OpenVPN",
+        "vpn-traffic-log": "Трафик VPN",
+        "vpn-dns-log": "DNS трафик VPN",
         "fail2ban": "Fail2Ban",
     },
     "backup_timer": {
@@ -556,12 +564,28 @@ def default_iface():
     return "eth0"
 
 
+def have_command(name):
+    return shutil.which(name) is not None
+
+
+def awg_available():
+    return have_command("awg") and have_command("awg-quick")
+
+
+def wg_bin():
+    return "awg" if awg_available() else "wg"
+
+
+def wg_quick_bin():
+    return "awg-quick" if awg_available() else "wg-quick"
+
+
 def parse_awg_show():
     return parse_wg_show(CFG["iface"])
 
 
 def parse_wg_show(iface):
-    binary = "awg" if iface == CFG["iface"] else "wg"
+    binary = "awg" if iface == CFG["iface"] and awg_available() else "wg"
     out = run([binary, "show", iface])
     server_pub = CFG["server_pubkey"]
     peers = []
@@ -595,21 +619,24 @@ def ensure_wireguard_server_config():
     amnezia_dir = Path("/etc/amnezia/amneziawg")
     amnezia_dir.mkdir(parents=True, exist_ok=True)
     if not CFG["wireguard_server_key"].exists():
-        priv = run(["awg", "genkey"]).strip()
-        pub = run(["awg", "pubkey"], input_text=priv + "\n").strip()
+        priv = run([wg_bin(), "genkey"]).strip()
+        pub = run([wg_bin(), "pubkey"], input_text=priv + "\n").strip()
         CFG["wireguard_server_key"].write_text(priv + "\n", encoding="utf-8")
         CFG["wireguard_server_pub"].write_text(pub + "\n", encoding="utf-8")
         os.chmod(CFG["wireguard_server_key"], 0o600)
     if not CFG["wireguard_server_pub"].exists():
         priv = CFG["wireguard_server_key"].read_text(encoding="utf-8").strip()
-        pub = run(["awg", "pubkey"], input_text=priv + "\n").strip()
+        pub = run([wg_bin(), "pubkey"], input_text=priv + "\n").strip()
         CFG["wireguard_server_pub"].write_text(pub + "\n", encoding="utf-8")
     conf_text = None
     target_conf = amnezia_dir / f"{CFG['wireguard_iface']}.conf"
     if not target_conf.exists():
         server_priv = CFG["wireguard_server_key"].read_text(encoding="utf-8").strip()
         out_iface = default_iface()
-        conf_text = f"""[Interface]\nAddress = {CFG['wireguard_server_ip']}/24\nListenPort = 51820\nPrivateKey = {server_priv}\nSaveConfig = true\nTable = auto\nPostUp = iptables -t nat -A POSTROUTING -s {CFG['wireguard_subnet']} -o {out_iface} -j MASQUERADE\nPostDown = iptables -t nat -D POSTROUTING -s {CFG['wireguard_subnet']} -o {out_iface} -j MASQUERADE\n"""
+        extra = ""
+        if awg_available():
+            extra = f"Jc = {CFG['template_jc']}\nJmin = {CFG['template_jmin']}\nJmax = {CFG['template_jmax']}\nS1 = {CFG['template_s1']}\nS2 = {CFG['template_s2']}\nS3 = {CFG['template_s3']}\nS4 = {CFG['template_s4']}\nH1 = {CFG['template_h1']}\nH2 = {CFG['template_h2']}\nH3 = {CFG['template_h3']}\nH4 = {CFG['template_h4']}\nI1 = {CFG['template_i1']}\n"
+        conf_text = f"""[Interface]\nAddress = {CFG['wireguard_server_ip']}/24\nListenPort = 51820\nPrivateKey = {server_priv}\nSaveConfig = true\nTable = auto\n{extra}PostUp = iptables -t nat -A POSTROUTING -s {CFG['wireguard_subnet']} -o {out_iface} -j MASQUERADE\nPostDown = iptables -t nat -D POSTROUTING -s {CFG['wireguard_subnet']} -o {out_iface} -j MASQUERADE\n"""
         target_conf.write_text(conf_text, encoding="utf-8")
         os.chmod(target_conf, 0o600)
     conf = etc_dir / f"{CFG['wireguard_iface']}.conf"
@@ -645,18 +672,18 @@ def wireguard_client_uri(client):
     if not host:
         host = wireguard_endpoint()
         port = "51820"
-    endpoint = f"{host}:{port}"
+    endpoint = f"{client_public_host(client)}:{port}"
     return f"[Interface]\nPrivateKey = {client['private_key']}\nAddress = {client['ip']}/32\nDNS = 1.1.1.1, 1.0.0.1\n\n[Peer]\nPublicKey = {server_pub}\nPresharedKey = {client['preshared_key']}\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = {endpoint}\nPersistentKeepalive = 25\n"
 
 
-def add_wireguard_client(name, iphone=False):
+def add_wireguard_client(name, iphone=False, endpoint=""):
     ensure_wireguard_server_config()
     state = load_wireguard_clients()
     _, peers = parse_wg_show(CFG["wireguard_iface"])
     used_ips = used_ips_from(peers, {"clients": state}, server_ip=CFG["wireguard_server_ip"])
     client_priv, client_pub, client_psk = gen_keypair()
     ip = next_ip(used_ips, subnet=CFG["wireguard_subnet"], server_ip=CFG["wireguard_server_ip"])
-    client = {"name": normalize_name(name), "ip": ip, "private_key": client_priv, "public_key": client_pub, "preshared_key": client_psk, "iphone": bool(iphone), "enabled": True}
+    client = {"name": normalize_name(name), "ip": ip, "private_key": client_priv, "public_key": client_pub, "preshared_key": client_psk, "iphone": bool(iphone), "enabled": True, "endpoint": host_from_hostport(endpoint) if str(endpoint).strip() else ""}
     with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
         tmp.write(client_psk + "\n")
         psk_path = tmp.name
@@ -685,8 +712,8 @@ def remove_wireguard_client(public_key):
         kept.append(client)
     if not removed:
         raise RuntimeError("client not found")
-    run(["wg", "set", CFG["wireguard_iface"], "peer", public_key, "remove"])
-    run(["wg-quick", "save", CFG["wireguard_iface"]])
+    run([wg_bin(), "set", CFG["wireguard_iface"], "peer", public_key, "remove"])
+    run([wg_quick_bin(), "save", CFG["wireguard_iface"]])
     save_wireguard_clients(kept)
     profile = CFG["profile_dir"] / f"{removed['name']}.conf"
     if profile.exists():
@@ -709,20 +736,20 @@ def toggle_wireguard_client(public_key, enabled):
             tmp.write(target["preshared_key"] + "\n")
             psk_path = tmp.name
         try:
-            run(["wg", "set", CFG["wireguard_iface"], "peer", public_key, "preshared-key", psk_path, "allowed-ips", f"{target['ip']}/32"])
+            run([wg_bin(), "set", CFG["wireguard_iface"], "peer", public_key, "preshared-key", psk_path, "allowed-ips", f"{target['ip']}/32"])
         finally:
             try:
                 os.unlink(psk_path)
             except Exception:
                 pass
-        run(["wg-quick", "save", CFG["wireguard_iface"]])
+        run([wg_quick_bin(), "save", CFG["wireguard_iface"]])
         target["enabled"] = True
         save_wireguard_clients(clients)
         save_profile_text(target["name"], wireguard_client_uri(target))
     else:
         try:
-            run(["wg", "set", CFG["wireguard_iface"], "peer", public_key, "remove"])
-            run(["wg-quick", "save", CFG["wireguard_iface"]])
+            run([wg_bin(), "set", CFG["wireguard_iface"], "peer", public_key, "remove"])
+            run([wg_quick_bin(), "save", CFG["wireguard_iface"]])
         finally:
             target["enabled"] = False
             save_wireguard_clients(clients)
@@ -800,7 +827,7 @@ def toggle_openvpn_client(name, enabled):
         run(["bash", "-lc", f"cd {shlex.quote(str(easy))} && EASYRSA_BATCH=1 ./easyrsa build-client-full {shlex.quote(base)} nopass"])
         target["enabled"] = True
         save_openvpn_clients(clients)
-        save_profile_text_with_suffix(base, openvpn_client_profile(base), ".ovpn")
+        save_profile_text_with_suffix(base, openvpn_client_profile(base, target.get("endpoint")), ".ovpn")
     else:
         openvpn_revoke_only(base)
         target["enabled"] = False
@@ -887,17 +914,21 @@ def used_ips_from(peers, state, server_ip=None, ip_key="ip"):
 
 
 def gen_keypair():
-    priv = run(["awg", "genkey"]).strip()
-    pub = run(["awg", "pubkey"], input_text=priv + "\n").strip()
-    psk = run(["awg", "genpsk"]).strip()
+    priv = run([wg_bin(), "genkey"]).strip()
+    pub = run([wg_bin(), "pubkey"], input_text=priv + "\n").strip()
+    psk = run([wg_bin(), "genpsk"]).strip()
     return priv, pub, psk
 
 
 def render_client_profile(client, server_pub):
-    endpoint = CFG["iphone_endpoint"] if client.get("iphone") else CFG["endpoint"]
-    endpoint = re.sub(r"^[^:]+", detect_public_host(), endpoint, count=1)
+    base_endpoint = CFG["iphone_endpoint"] if client.get("iphone") else CFG["endpoint"]
+    port = base_endpoint.rsplit(":", 1)[1] if ":" in base_endpoint else "1234"
+    endpoint = f"{client_public_host(client)}:{port}"
     mtu_line = f"MTU = {CFG['template_mtu']}\n" if client.get("iphone") else ""
-    return f"""[Interface]\nAddress = {client['ip']}/32\nPrivateKey = {client['private_key']}\nDNS = 1.1.1.1, 1.0.0.1\n{mtu_line}Jc = {CFG['template_jc']}\nJmin = {CFG['template_jmin']}\nJmax = {CFG['template_jmax']}\nS1 = {CFG['template_s1']}\nS2 = {CFG['template_s2']}\nS3 = {CFG['template_s3']}\nS4 = {CFG['template_s4']}\nH1 = {CFG['template_h1']}\nH2 = {CFG['template_h2']}\nH3 = {CFG['template_h3']}\nH4 = {CFG['template_h4']}\nI1 = {CFG['template_i1']}\n\n[Peer]\nPublicKey = {server_pub}\nPresharedKey = {client['preshared_key']}\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = {endpoint}\nPersistentKeepalive = 25\n"""
+    extras = ""
+    if awg_available():
+        extras = f"Jc = {CFG['template_jc']}\nJmin = {CFG['template_jmin']}\nJmax = {CFG['template_jmax']}\nS1 = {CFG['template_s1']}\nS2 = {CFG['template_s2']}\nS3 = {CFG['template_s3']}\nS4 = {CFG['template_s4']}\nH1 = {CFG['template_h1']}\nH2 = {CFG['template_h2']}\nH3 = {CFG['template_h3']}\nH4 = {CFG['template_h4']}\nI1 = {CFG['template_i1']}\n"
+    return f"""[Interface]\nAddress = {client['ip']}/32\nPrivateKey = {client['private_key']}\nDNS = 1.1.1.1, 1.0.0.1\n{mtu_line}{extras}\n[Peer]\nPublicKey = {server_pub}\nPresharedKey = {client['preshared_key']}\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = {endpoint}\nPersistentKeepalive = 25\n"""
 
 
 def save_client_profile(client, server_pub):
@@ -911,7 +942,7 @@ def qr_svg(text):
     return run(["qrencode", "-t", "SVG", "-o", "-"], input_text=text)
 
 
-def add_client(name, iphone=False):
+def add_client(name, iphone=False, endpoint=""):
     state = load_state()
     server_pub, peers = parse_awg_show()
     used_ips = used_ips_from(peers, state)
@@ -924,13 +955,14 @@ def add_client(name, iphone=False):
         "public_key": client_pub,
         "preshared_key": client_psk,
         "iphone": bool(iphone),
+        "endpoint": host_from_hostport(endpoint) if str(endpoint).strip() else "",
     }
     with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
         tmp.write(client_psk + "\n")
         psk_path = tmp.name
     try:
         run([
-            "awg",
+            wg_bin(),
             "set",
             CFG["iface"],
             "peer",
@@ -945,11 +977,53 @@ def add_client(name, iphone=False):
             os.unlink(psk_path)
         except FileNotFoundError:
             pass
-    run(["awg-quick", "save", CFG["iface"]])
+    run([wg_quick_bin(), "save", CFG["iface"]])
     state.setdefault("clients", []).append(client)
     save_state(state)
     save_client_profile(client, server_pub)
     return client
+
+
+def toggle_client(public_key, enabled):
+    state = load_state()
+    target = None
+    for client in state.get("clients", []):
+        if client.get("public_key") == public_key:
+            target = client
+            break
+    if not target:
+        raise RuntimeError("client not found")
+    if enabled:
+        if not target.get("private_key") or not target.get("preshared_key") or not target.get("ip"):
+            raise RuntimeError("client config incomplete")
+        with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
+            tmp.write(target["preshared_key"] + "\n")
+            psk_path = tmp.name
+        try:
+            run([
+                wg_bin(),
+                "set",
+                CFG["iface"],
+                "peer",
+                public_key,
+                "preshared-key",
+                psk_path,
+                "allowed-ips",
+                f"{target['ip']}/32",
+            ])
+        finally:
+            try:
+                os.unlink(psk_path)
+            except FileNotFoundError:
+                pass
+        run([wg_quick_bin(), "save", CFG["iface"]])
+        target["enabled"] = True
+    else:
+        run([wg_bin(), "set", CFG["iface"], "peer", public_key, "remove"])
+        run([wg_quick_bin(), "save", CFG["iface"]])
+        target["enabled"] = False
+    save_state(state)
+    return target
 
 
 def remove_client(public_key):
@@ -963,8 +1037,8 @@ def remove_client(public_key):
         kept.append(client)
     if not removed:
         raise RuntimeError("client not found")
-    run(["awg", "set", CFG["iface"], "peer", public_key, "remove"])
-    run(["awg-quick", "save", CFG["iface"]])
+    run([wg_bin(), "set", CFG["iface"], "peer", public_key, "remove"])
+    run([wg_quick_bin(), "save", CFG["iface"]])
     state["clients"] = kept
     save_state(state)
     profile = CFG["profile_dir"] / f"{removed['name']}.conf"
@@ -1044,6 +1118,38 @@ def detect_public_host():
     return (CFG.get("endpoint") or "127.0.0.1:443").split(":", 1)[0]
 
 
+def public_host_choices():
+    hosts = []
+    seen = set()
+    try:
+        out = run(["ip", "-4", "-o", "addr", "show", "scope", "global"])
+        for raw in out.splitlines():
+            parts = raw.split()
+            if "inet" not in parts:
+                continue
+            addr = parts[parts.index("inet") + 1].split("/", 1)[0]
+            if not addr:
+                continue
+            try:
+                ip = ipaddress.ip_address(addr)
+            except ValueError:
+                continue
+            if ip.version != 4 or not ip.is_global or addr in seen:
+                continue
+            hosts.append(addr)
+            seen.add(addr)
+    except Exception:
+        pass
+    preferred = detect_public_host()
+    if preferred and preferred not in seen:
+        try:
+            if ipaddress.ip_address(preferred).is_global:
+                hosts.insert(0, preferred)
+        except ValueError:
+            pass
+    return hosts
+
+
 def public_endpoint(port=None):
     host = detect_public_host()
     if port is None:
@@ -1102,7 +1208,7 @@ def save_profile_text_with_suffix(name, text, suffix=".conf"):
 def hysteria_client_uri(client):
     port = os.environ.get("PANEL_HYSTERIA_PORT", "8448")
     auth = f"{quote(client['username'], safe='')}:{quote(client['password'], safe='')}"
-    host = detect_public_host()
+    host = client_public_host(client)
     sni = hysteria_server_name()
     return f"hysteria2://{auth}@{host}:{port}/?sni={quote(sni, safe='')}&insecure=1"
 
@@ -1120,7 +1226,7 @@ def load_hysteria_clients():
             username = str(item["username"])
             if username.startswith("__internal__") or username in ignored_usernames:
                 continue
-            clients.append({"name": str(item.get("name") or username), "username": username, "password": str(item["password"]), "iphone": bool(item.get("iphone", False)), "enabled": bool(item.get("enabled", True))})
+            clients.append({"name": str(item.get("name") or username), "username": username, "password": str(item["password"]), "iphone": bool(item.get("iphone", False)), "enabled": bool(item.get("enabled", True)), "endpoint": str(item.get("endpoint", "")).strip()})
     return clients
 
 
@@ -1159,7 +1265,7 @@ def write_hysteria_config(clients):
     Path("/etc/hysteria/config.yaml").write_text(text, encoding="utf-8")
 
 
-def add_hysteria_client(name, iphone=False):
+def add_hysteria_client(name, iphone=False, endpoint=""):
     clients = load_hysteria_clients()
     username = path_safe_name(name)
     existing = {c["username"] for c in clients}
@@ -1170,7 +1276,7 @@ def add_hysteria_client(name, iphone=False):
             idx += 1
             candidate = f"{username}{idx}"
         username = candidate
-    client = {"name": path_safe_name(name or username), "username": username, "password": secrets.token_urlsafe(18), "iphone": bool(iphone), "enabled": True}
+    client = {"name": path_safe_name(name or username), "username": username, "password": secrets.token_urlsafe(18), "iphone": bool(iphone), "enabled": True, "endpoint": host_from_hostport(endpoint) if str(endpoint).strip() else ""}
     clients.append(client)
     save_hysteria_clients(clients)
     write_hysteria_config(clients)
@@ -1208,7 +1314,7 @@ def vless_client_uri(client, cfg=None):
     server_name = (cfg.get("serverNames") or ["www.cloudflare.com"])[0]
     short_id = (cfg.get("shortIds") or [""])[0]
     flow = cfg.get("flow") or "xtls-rprx-vision"
-    host = detect_public_host()
+    host = client_public_host(client)
     return (
         f"vless://{quote(client['uuid'], safe='')}@{host}:{cfg.get('port', 8449)}"
         f"?type=tcp&encryption=none&security=reality"
@@ -1225,7 +1331,7 @@ def load_vless_clients():
             continue
         uuid_value = str(item.get("uuid") or item.get("username") or "").strip()
         if uuid_value:
-            clients.append({"name": str(item.get("name") or uuid_value).strip(), "uuid": uuid_value, "iphone": bool(item.get("iphone", False)), "enabled": bool(item.get("enabled", True))})
+            clients.append({"name": str(item.get("name") or uuid_value).strip(), "uuid": uuid_value, "iphone": bool(item.get("iphone", False)), "enabled": bool(item.get("enabled", True)), "endpoint": str(item.get("endpoint", "")).strip()})
     return clients
 
 
@@ -1248,9 +1354,9 @@ def write_xray_config(clients):
         save_profile_text(clients[0]["name"], vless_client_uri(clients[0], cfg))
 
 
-def add_vless_client(name, iphone=False):
+def add_vless_client(name, iphone=False, endpoint=""):
     clients = load_vless_clients()
-    client = {"name": path_safe_name(name or "client"), "uuid": str(uuid.uuid4()), "iphone": bool(iphone), "enabled": True}
+    client = {"name": path_safe_name(name or "client"), "uuid": str(uuid.uuid4()), "iphone": bool(iphone), "enabled": True, "endpoint": host_from_hostport(endpoint) if str(endpoint).strip() else ""}
     while any(c["uuid"] == client["uuid"] for c in clients):
         client["uuid"] = str(uuid.uuid4())
     clients.append(client)
@@ -1259,8 +1365,12 @@ def add_vless_client(name, iphone=False):
     return client
 
 
-def openvpn_client_profile(name):
+def openvpn_client_profile(name, endpoint=None):
+    if not endpoint:
+        client = next((item for item in load_openvpn_clients(sync_profiles=False) if item.get("name") == path_safe_name(name)), None)
+        endpoint = client_public_host(client) if client else detect_public_host()
     host, port = openvpn_server_host_port()
+    host = host_from_hostport(endpoint)
     ca = read_text_safe("/etc/openvpn/server/pki/ca.crt")
     cert = read_cert_pem(f"/etc/openvpn/server/pki/issued/{path_safe_name(name)}.crt") or read_cert_pem(f"/etc/openvpn/easy-rsa/pki/issued/{path_safe_name(name)}.crt")
     key = read_text_safe(f"/etc/openvpn/server/pki/private/{path_safe_name(name)}.key") or read_text_safe(f"/etc/openvpn/easy-rsa/pki/private/{path_safe_name(name)}.key")
@@ -1295,24 +1405,45 @@ verb 3
 """
 
 
-def load_openvpn_clients():
+def load_openvpn_clients(sync_profiles=True):
     clients = load_json_list(CFG["openvpn_clients_file"])
+    ipp = openvpn_ipp_map()
     if clients:
-        sync_openvpn_profiles(clients)
+        for client in clients:
+            if not client.get("ip") and client.get("name") in ipp:
+                client["ip"] = ipp.get(client.get("name"), "")
+        if sync_profiles:
+            sync_openvpn_profiles(clients)
         return clients
     issued = Path("/etc/openvpn/server/pki/issued")
     if issued.exists():
         for item in sorted(issued.glob("*.crt")):
             if item.stem != "server":
-                clients.append({"name": item.stem, "iphone": False, "enabled": True})
+                clients.append({"name": item.stem, "iphone": False, "enabled": True, "endpoint": "", "ip": ipp.get(item.stem, "")})
         if clients:
             save_openvpn_clients(clients)
-            sync_openvpn_profiles(clients)
+            if sync_profiles:
+                sync_openvpn_profiles(clients)
     return clients
 
 
 def save_openvpn_clients(clients):
     save_json_list(CFG["openvpn_clients_file"], clients)
+
+
+def openvpn_ipp_map():
+    mapping = {}
+    path = Path("/var/log/openvpn/server/ipp.txt")
+    if not path.exists():
+        return mapping
+    try:
+        for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            parts = [p.strip() for p in raw.split(",")]
+            if len(parts) >= 2 and parts[0] and parts[1]:
+                mapping[parts[0]] = parts[1]
+    except Exception:
+        pass
+    return mapping
 
 
 def sync_openvpn_profiles(clients):
@@ -1321,12 +1452,12 @@ def sync_openvpn_profiles(clients):
         if not name:
             continue
         if client.get("enabled", True):
-            save_profile_text_with_suffix(name, openvpn_client_profile(name), ".ovpn")
+            save_profile_text_with_suffix(name, openvpn_client_profile(name, client.get("endpoint")), ".ovpn")
         else:
             delete_profile_file_with_suffix(name, ".ovpn")
 
 
-def add_openvpn_client(name, iphone=False):
+def add_openvpn_client(name, iphone=False, endpoint=""):
     clients = load_openvpn_clients()
     base = path_safe_name(name or "client")
     if any(c.get("name") == base for c in clients):
@@ -1339,8 +1470,9 @@ def add_openvpn_client(name, iphone=False):
     cleanup_openvpn_client_artifacts(base)
     easy = Path("/etc/openvpn/easy-rsa")
     run(["bash", "-lc", f"cd {shlex.quote(str(easy))} && EASYRSA_BATCH=1 ./easyrsa build-client-full {shlex.quote(base)} nopass"])
-    save_openvpn_clients(clients + [{"name": base, "iphone": bool(iphone), "enabled": True}])
-    save_profile_text_with_suffix(base, openvpn_client_profile(base), ".ovpn")
+    client = {"name": base, "iphone": bool(iphone), "enabled": True, "endpoint": host_from_hostport(endpoint) if str(endpoint).strip() else ""}
+    save_openvpn_clients(clients + [client])
+    save_profile_text_with_suffix(base, openvpn_client_profile(base, client.get("endpoint")), ".ovpn")
     return {"name": base, "iphone": bool(iphone)}
 
 
@@ -1656,15 +1788,18 @@ a { color: inherit; }
 .client-grid { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:14px; }
 .client-card { padding:18px; border-radius:18px; border:1px solid var(--line); background: linear-gradient(180deg, #202633, #171b23); }
 .client-card .head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.client-card .top-right { display:grid; justify-items:end; gap:8px; }
 .client-card .name { font-size:18px; font-weight:800; letter-spacing:-.02em; }
-.client-card .meta { display:grid; gap:10px; margin-top:12px; }
+.client-card .meta { display:grid; gap:10px; margin-top:12px; padding:12px; border-radius:16px; background:#10141b; border:1px solid rgba(160,171,192,.12); }
 .client-card .meta .row { display:flex; justify-content:space-between; gap:14px; align-items:flex-start; font-size:14px; }
 .client-card .meta .row span { color:var(--muted); }
-.client-card .profile { margin-top:12px; padding:12px; border-radius:14px; background:#10141b; border:1px solid rgba(160,171,192,.12); display:grid; gap:8px; }
-.client-card .profile .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
-.client-card .profile code { color:#e7ecff; font-size:13px; line-height:1.5; }
-.client-card .actions { margin-top:14px; }
+.client-card .actions { margin-top:14px; display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:10px; }
+.client-card .actions > * { min-width:0; width:100%; }
+.client-card .actions form { margin:0; }
+.client-card .actions form button,
+.client-card .actions > a { width:100%; }
 .client-card .actions .ghost, .client-card .actions .danger { flex:1; }
+.client-card .traffic-link { padding:8px 12px; border-radius:999px; font-size:12px; }
 .rule-grid { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:14px; }
 .rule-tile { padding:18px; border-radius:18px; border:1px solid var(--line); background: linear-gradient(180deg, #202633, #171b23); }
 .rule-tile .label { color:#b5c0d4; font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
@@ -1722,6 +1857,20 @@ code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 code { color:#b4c0ff; word-break:break-all; }
 pre { margin:0; padding:14px; border-radius:16px; background:#0e1117; border:1px solid var(--line); overflow:auto; max-height:420px; }
 .tablewrap { overflow:auto; border-radius:16px; }
+.traffic-tablewrap { max-height: min(68vh, 760px); overflow:auto; overscroll-behavior: contain; }
+.traffic-tablewrap table { min-width: 100%; }
+.traffic-tablewrap th { position: sticky; top: 0; z-index: 1; }
+.traffic-row { cursor:pointer; }
+.traffic-row:hover td { background:#202636; }
+.traffic-row.is-open td { background:#202b3a; }
+.traffic-detail td { background:#121722; padding:14px 14px 16px; }
+.traffic-detail-grid { display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:12px 16px; }
+.traffic-detail-grid div { min-width:0; }
+.traffic-detail-grid span { display:block; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }
+.traffic-detail-grid strong { display:block; font-size:14px; overflow-wrap:anywhere; }
+.traffic-raw { margin-top:14px; }
+.traffic-raw span { display:block; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }
+.traffic-raw pre { max-height:240px; margin:0; }
 .mobile-drawer, .drawer-backdrop { display:none; }
 .dual { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:16px; }
 .mini { color:var(--muted); font-size:13px; }
@@ -1813,7 +1962,7 @@ html, body { width:100%; max-width:100%; overflow-x:hidden; }
   .kpi { min-width:0; }
   .status-pill { max-width:100%; }
   .client-card .head { flex-direction:column; align-items:flex-start; }
-  .client-card .actions { display:grid; grid-template-columns:1fr; }
+  .client-card .actions { display:grid; grid-template-columns:1fr 1fr; }
   .sys-grid { gap:10px; }
 }
 /* Concept redesign: product-like control center, not a pile of boxes. */
@@ -1912,7 +2061,7 @@ def service_status(name):
     enabled = (enabled_res.stdout or enabled_res.stderr or "unknown").strip() or "unknown"
     if name == "awg" and active in {"inactive", "failed", "unknown"}:
         try:
-            if run(["awg", "show", CFG["iface"]]).strip():
+            if run([wg_bin(), "show", CFG["iface"]]).strip():
                 active = "active"
         except Exception:
             pass
@@ -2765,9 +2914,20 @@ def journal_text(unit, limit=4000):
         return ""
 
 
+RECENT_JOURNAL_CACHE = {}
+
+
 def recent_journal_names(unit, patterns, since_days=30):
+    cache_key = (unit, tuple(patterns), since_days)
+    now = time.time()
+    cached = RECENT_JOURNAL_CACHE.get(cache_key)
+    if cached and now - cached[0] < 10:
+        return set(cached[1])
+
+    # Full time-range scans can be very slow on busy servers; a capped tail is
+    # enough for the "recent" warnings used by the UI.
     try:
-        text = run(["journalctl", "-u", unit, "-b", "--since", f"{since_days} days ago", "--no-pager", "-o", "cat"])
+        text = run(["journalctl", "-u", unit, "-b", "--no-pager", "-o", "cat", "-n", "5000"])
     except Exception:
         return set()
     names = set()
@@ -2777,6 +2937,7 @@ def recent_journal_names(unit, patterns, since_days=30):
             if match:
                 names.add(match.group(1).strip())
                 break
+    RECENT_JOURNAL_CACHE[cache_key] = (now, frozenset(names))
     return names
 
 
@@ -2856,6 +3017,27 @@ def host_from_hostport(value):
     return value
 
 
+def client_public_host(client):
+    host = host_from_hostport((client or {}).get("endpoint"))
+    return host if host and host != "-" else detect_public_host()
+
+
+def client_vpn_ip(kind, client):
+    if not client:
+        return ""
+    if kind in {"amnezia", "wireguard"}:
+        return str(client.get("ip", "")).strip()
+    if kind == "openvpn":
+        return str(client.get("ip", "")).strip()
+    return str(client.get("ip", "")).strip()
+
+
+def traffic_monitor_link(kind, ident, label="Трафик"):
+    qkind = quote(kind, safe="")
+    qident = quote(ident or "", safe="")
+    return f"<a class='ghost traffic-link' href='/traffic?kind={qkind}&ident={qident}'>{html.escape(label)}</a>"
+
+
 def openvpn_client_source_ips():
     mapping = {}
     for line in journal_text("openvpn-server@server.service").splitlines():
@@ -2885,6 +3067,169 @@ def xray_client_source_ips():
         if match:
             mapping[match.group(2).strip()] = match.group(1).strip()
     return mapping
+
+
+def vpn_traffic_log_lines(days=7):
+    since = f"{days} days ago"
+    try:
+        return run(["journalctl", "-k", "--since", since, "--no-pager", "-o", "short-iso-precise", "-g", "VPNTRAFFIC"]).splitlines()
+    except Exception:
+        return []
+
+
+def vpn_dns_log_lines(days=7):
+    since = f"{days} days ago"
+    try:
+        return run(["journalctl", "-u", "vpn-dns-log.service", "--since", since, "--no-pager", "-o", "cat"]).splitlines()
+    except Exception:
+        return []
+
+
+def parse_vpn_traffic_lines(lines, source_ip=None):
+    entries = []
+    source_ip = str(source_ip or "").strip()
+    source_re = re.compile(rf"\bSRC={re.escape(source_ip)}\b") if source_ip else None
+    for line in lines:
+        if "VPNTRAFFIC" not in line:
+            continue
+        if source_re and not source_re.search(line):
+            continue
+        ts = line.split(" kernel:", 1)[0].strip()
+        msg = line.split("VPNTRAFFIC", 1)[-1].strip()
+        src = re.search(r"SRC=([0-9a-fA-F:.]+)", msg)
+        dst = re.search(r"DST=([0-9a-fA-F:.]+)", msg)
+        proto = re.search(r"PROTO=(\S+)", msg)
+        spt = re.search(r"SPT=(\d+)", msg)
+        dpt = re.search(r"DPT=(\d+)", msg)
+        out = re.search(r"OUT=(\S+)", msg)
+        inp = re.search(r"IN=(\S+)", msg)
+        entries.append({
+            "time": ts,
+            "time_human": format_traffic_time(ts),
+            "src": src.group(1) if src else "-",
+            "src_host": resolve_reverse_dns(src.group(1)) if src else "-",
+            "dst": dst.group(1) if dst else "-",
+            "dst_host": resolve_reverse_dns(dst.group(1)) if dst else "-",
+            "proto": proto.group(1) if proto else "-",
+            "sport": spt.group(1) if spt else "-",
+            "dport": dpt.group(1) if dpt else "-",
+            "out": out.group(1) if out else "-",
+            "in": inp.group(1) if inp else "-",
+            "raw": msg,
+        })
+    return entries
+
+
+def traffic_entries(kind, ident, days=7, limit=500):
+    kind = str(kind or "").strip()
+    ident = str(ident or "").strip()
+    supported = kind in {"amnezia", "wireguard", "openvpn"}
+    source_ip = ident.split("/", 1)[0].strip() if supported else ""
+    entries = parse_vpn_traffic_lines(vpn_traffic_log_lines(days), source_ip=source_ip) if supported and source_ip else []
+    dns_map = traffic_dns_domain_map(days) if supported and source_ip else {}
+    entries = list(reversed(entries))[:limit]
+    payload = []
+    for entry in entries:
+        dns_domain = dns_map.get(source_ip, {}).get(entry.get("dst", ""), "") if source_ip else ""
+        dst_display = dns_domain or entry.get("dst_host") or entry.get("dst") or "-"
+        src_display = entry.get("src_host") or entry.get("src") or "-"
+        key_source = "|".join([
+            entry.get("time", ""),
+            entry.get("src", ""),
+            entry.get("dst", ""),
+            entry.get("sport", ""),
+            entry.get("dport", ""),
+            entry.get("proto", ""),
+            entry.get("raw", ""),
+        ])
+        payload.append({
+            **entry,
+            "src_display": src_display,
+            "dst_display": dst_display,
+            "dns_domain": dns_domain,
+            "key": hashlib.sha1(key_source.encode("utf-8", "ignore")).hexdigest(),
+            "source_ip": source_ip,
+        })
+    return {
+        "supported": supported,
+        "source_ip": source_ip,
+        "entries": payload,
+    }
+
+
+def traffic_client_name_by_ip(kind, ip):
+    ip = str(ip or "").strip()
+    if not ip:
+        return ""
+    kind = str(kind or "").strip()
+    if kind == "amnezia":
+        for client in load_state().get("clients", []):
+            if str(client.get("ip", "")).strip() == ip:
+                return str(client.get("name") or "").strip()
+    if kind == "wireguard":
+        for client in load_wireguard_clients():
+            if str(client.get("ip", "")).strip() == ip:
+                return str(client.get("name") or "").strip()
+    if kind == "openvpn":
+        for client in load_openvpn_clients(sync_profiles=False):
+            if str(client.get("ip", "")).strip() == ip:
+                return str(client.get("name") or "").strip()
+    return ""
+
+
+def traffic_dns_domain_map(days=7):
+    query_re = re.compile(r"(?P<src>(?:\d{1,3}\.){3}\d{1,3})\.(?P<sport>\d+)\s*>\s*(?P<dst>(?:\d{1,3}\.){3}\d{1,3})\.53:\s*(?P<txid>\d+)\+?\s+(?P<qtype>[A-Z0-9]+)\?\s+(?P<domain>[^\s]+)")
+    response_re = re.compile(r"(?P<src>(?:\d{1,3}\.){3}\d{1,3})\.53\s*>\s*(?P<client>(?:\d{1,3}\.){3}\d{1,3})\.(?P<cport>\d+):\s*(?P<txid>\d+)\s+(?P<rest>.*)")
+    answer_re = re.compile(r"\b(?:A|AAAA)\s+((?:\d{1,3}\.){3}\d{1,3}|[0-9A-Fa-f:]+)")
+    pending = {}
+    by_client = {}
+    for line in vpn_dns_log_lines(days):
+        line = line.strip()
+        if not line:
+            continue
+        qm = query_re.search(line)
+        if qm:
+            key = (qm.group("src"), qm.group("sport"), qm.group("txid"))
+            pending[key] = qm.group("domain").rstrip(".")
+            continue
+        rm = response_re.search(line)
+        if not rm:
+            continue
+        key = (rm.group("client"), rm.group("cport"), rm.group("txid"))
+        domain = pending.get(key)
+        if not domain:
+            continue
+        answers = [ip for ip in answer_re.findall(rm.group("rest")) if "." in ip]
+        if not answers:
+            continue
+        client_map = by_client.setdefault(rm.group("client"), {})
+        for answer in answers:
+            client_map[answer] = domain
+    return by_client
+
+
+@lru_cache(maxsize=4096)
+def resolve_reverse_dns(ip):
+    ip = str(ip or "").strip()
+    if not ip or ip == "-":
+        return "-"
+    try:
+        host = socket.gethostbyaddr(ip)[0].rstrip('.')
+        return host or ip
+    except Exception:
+        return ip
+
+
+def format_traffic_time(value):
+    value = str(value or "").strip()
+    if not value:
+        return "-"
+    ts = value.split(" ", 1)[0]
+    try:
+        dt = datetime.fromisoformat(ts)
+        return dt.strftime("%d.%m.%Y %H:%M:%S")
+    except Exception:
+        return value
 
 
 def duplicate_warning_items(clients, name_field="name", ip_field=None):
@@ -3018,11 +3363,13 @@ def client_rows():
     server_pub, peers = parse_awg_show()
     state = load_state()
     names = {c["public_key"]: c["name"] for c in state.get("clients", [])}
+    enabled_map = {c["public_key"]: bool(c.get("enabled", True)) for c in state.get("clients", [])}
     managed = set(names.keys())
     rows = []
     for peer in peers:
         peer["name"] = names.get(peer["public_key"], peer["public_key"][:12])
         peer["managed"] = peer["public_key"] in managed
+        peer["enabled"] = enabled_map.get(peer["public_key"], True)
         peer.update(peer_connection_state(peer))
         rows.append(peer)
     return server_pub, rows
@@ -3147,6 +3494,19 @@ document.addEventListener('click', function(e) {{
     copyText(copyBtn.getAttribute('data-copy-text') || '');
     return;
   }}
+  const trafficRow = e.target.closest('[data-traffic-toggle]');
+  if (trafficRow) {{
+    e.preventDefault();
+    const targetId = trafficRow.getAttribute('data-traffic-target');
+    const detail = targetId ? document.getElementById(targetId) : null;
+    if (detail) {{
+      const isOpen = !detail.hidden;
+      detail.hidden = isOpen;
+      trafficRow.classList.toggle('is-open', !isOpen);
+      trafficRow.setAttribute('aria-expanded', String(!isOpen));
+    }}
+    return;
+  }}
   if (e.target === qrBackdrop) closeQrModal();
 }});
 qrBackdrop.addEventListener('click', closeQrModal);
@@ -3154,6 +3514,11 @@ qrModalClose.addEventListener('click', closeQrModal);
 document.addEventListener('keydown', function(e) {{
   if (e.key === 'Escape') toggleDrawer(false);
   if (e.key === 'Escape' && !qrModal.hidden) closeQrModal();
+  const trafficRow = e.target && e.target.closest ? e.target.closest('[data-traffic-toggle]') : null;
+  if (trafficRow && (e.key === 'Enter' || e.key === ' ')) {{
+    e.preventDefault();
+    trafficRow.click();
+  }}
 }});
 function updateVpnStatus(root, payload) {{
   if (!root || !payload) return;
@@ -3215,6 +3580,65 @@ async function refreshMtprotoStatus() {{
 if (document.querySelector('[data-mtproto-root]')) {{
   refreshMtprotoStatus();
   setInterval(refreshMtprotoStatus, 5000);
+}}
+function escapeHtml(value) {{
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}}
+function renderTrafficRows(entries, openKeys) {{
+  if (!entries || !entries.length) return "<tr><td colspan='5'>Нет данных за последние 7 дней</td></tr>";
+  return entries.map(function(entry) {{
+    const key = entry.key || '';
+    const detailId = 'traffic-detail-' + key;
+    const isOpen = openKeys && openKeys.has(key);
+    const srcHost = entry.src_display || entry.src_host || entry.src;
+    const dstHost = entry.dst_display || entry.dst_host || entry.dst;
+    return [
+      '<tr class="traffic-row' + (isOpen ? ' is-open' : '') + '" data-traffic-toggle="1" data-traffic-target="' + escapeHtml(detailId) + '" data-traffic-key="' + escapeHtml(key) + '" role="button" tabindex="0" aria-expanded="' + (isOpen ? 'true' : 'false') + '">',
+      '<td title="' + escapeHtml(entry.time || '') + '">' + escapeHtml(entry.time_human || entry.time || '-') + '</td>',
+      '<td><code title="' + escapeHtml(entry.src || '-') + '">' + escapeHtml(srcHost || '-') + '</code></td>',
+      '<td><code title="' + escapeHtml(entry.dst || '-') + '">' + escapeHtml(dstHost || '-') + '</code>:<code>' + escapeHtml(entry.dport || '-') + '</code></td>',
+      '<td>' + escapeHtml(entry.proto || '-') + '</td>',
+      '<td><code>' + escapeHtml(entry.in || '-') + '</code> → <code>' + escapeHtml(entry.out || '-') + '</code></td>',
+      '</tr>',
+      '<tr id="' + escapeHtml(detailId) + '" class="traffic-detail"' + (isOpen ? '' : ' hidden') + '>',
+      '<td colspan="5">',
+      '<div class="traffic-detail-grid">',
+      '<div><span>Время</span><strong>' + escapeHtml(entry.time_human || entry.time || '-') + '</strong></div>',
+      '<div><span>От</span><strong><code>' + escapeHtml(entry.src || '-') + '</code> ' + (srcHost && srcHost !== (entry.src || '-') ? escapeHtml(srcHost) : '') + '</strong></div>',
+      '<div><span>Куда</span><strong><code>' + escapeHtml(entry.dst || '-') + '</code> ' + (dstHost && dstHost !== (entry.dst || '-') ? escapeHtml(dstHost) : '') + '</strong></div>',
+      '<div><span>Протокол</span><strong>' + escapeHtml(entry.proto || '-') + '</strong></div>',
+      '<div><span>Порты</span><strong>' + escapeHtml(entry.sport || '-') + ' → ' + escapeHtml(entry.dport || '-') + '</strong></div>',
+      '<div><span>Интерфейсы</span><strong><code>' + escapeHtml(entry.in || '-') + '</code> → <code>' + escapeHtml(entry.out || '-') + '</code></strong></div>',
+      '</div>',
+      '<div class="traffic-raw"><span>Сырой лог</span><pre>' + escapeHtml(entry.raw || '') + '</pre></div>',
+      '</td></tr>'
+    ].join('');
+  }}).join('');
+}}
+async function refreshTrafficPage() {{
+  const root = document.querySelector('[data-traffic-root]');
+  const tbody = document.querySelector('[data-traffic-body]');
+  if (!root || !tbody) return;
+  const kind = root.getAttribute('data-traffic-kind') || '';
+  const ident = root.getAttribute('data-traffic-ident') || '';
+  try {{
+    const res = await fetch('/api/traffic?kind=' + encodeURIComponent(kind) + '&ident=' + encodeURIComponent(ident), {{ cache: 'no-store' }});
+    if (!res.ok) return;
+    const payload = await res.json();
+    const openKeys = new Set(Array.from(tbody.querySelectorAll('tr.traffic-row.is-open')).map(function(row) {{ return row.getAttribute('data-traffic-key') || ''; }}).filter(Boolean));
+    tbody.innerHTML = renderTrafficRows(payload.entries || [], openKeys);
+    const badge = root.querySelector('[data-traffic-refresh-state]');
+    if (badge) badge.textContent = 'обновлено ' + new Date().toLocaleTimeString('ru-RU', {{ hour: '2-digit', minute: '2-digit', second: '2-digit' }});
+  }} catch (e) {{}}
+}}
+if (document.querySelector('[data-traffic-root]')) {{
+  refreshTrafficPage();
+  setInterval(refreshTrafficPage, 1500);
 }}
 </script>
 </body></html>"""
@@ -3369,19 +3793,58 @@ def build_system_page(message="", error=""):
 
 def build_clients_page(message="", error="", active_page="amnezia", page_title="Amnezia", path="/amnezia"):
     _, peers = client_rows()
-    managed_count = sum(1 for p in peers if p.get("managed"))
-    connected = sum(1 for p in peers if p.get("status") == "подключён")
-    cards = []
+    state = load_state()
+    managed_clients = {c.get("public_key"): c for c in state.get("clients", []) if c.get("public_key")}
+    display_peers = []
+    seen_keys = set()
     for peer in peers:
+        key = peer.get("public_key")
+        client = managed_clients.get(key)
+        if client:
+            peer["managed"] = True
+            peer["enabled"] = bool(client.get("enabled", True))
+            if not peer["enabled"]:
+                peer["status"] = "отключён"
+                peer["status_class"] = "bad"
+        display_peers.append(peer)
+        seen_keys.add(key)
+    for key, client in managed_clients.items():
+        if key in seen_keys:
+            continue
+        display_peers.append({
+            "name": client.get("name") or key[:12],
+            "public_key": key,
+            "ip": client.get("ip", "-"),
+            "allowed_ips": [f"{client.get('ip', '-')}/32"] if client.get("ip") else [],
+            "transfer": "-",
+            "managed": True,
+            "enabled": False,
+            "status": "отключён",
+            "status_class": "bad",
+            "last_seen": "-",
+            "endpoint": client.get("endpoint", ""),
+        })
+    managed_count = len(managed_clients)
+    connected = sum(1 for p in display_peers if p.get("managed") and p.get("enabled", True) and p.get("status") == "подключён")
+    cards = []
+    for peer in display_peers:
         name = html.escape(peer.get("name") or peer["public_key"][:12])
         pub = html.escape(peer["public_key"])
-        ip = html.escape((peer.get("allowed_ips") or ["-"])[0])
+        ip_raw = peer.get("ip") or (peer.get("allowed_ips") or ["-"])[0]
+        ip = html.escape(ip_raw)
         transfer = html.escape(peer.get("transfer", "-"))
         download_name = quote((peer.get("name") or peer["public_key"]) + ".conf", safe="")
         managed = peer.get("managed", False)
+        enabled = peer.get("enabled", True)
         status_class = "good" if peer.get("status") == "подключён" else "bad"
         status_text = html.escape(peer.get("status", "отключён"))
         status_id = stable_dom_id("awg", peer.get("public_key") or peer.get("name"))
+        actions = []
+        if managed:
+            actions.append(toggle_form('/awg-toggle', path, 'public_key', peer['public_key'], 'Включить', 'pillbtn') if not enabled else toggle_form('/awg-toggle', path, 'public_key', peer['public_key'], 'Отключить', 'danger'))
+        actions.append(f"<form method='post' action='/delete'><input type='hidden' name='return_to' value='{html.escape(path)}' /><input type='hidden' name='public_key' value='{pub}' /><button class='danger' type='submit'>Удалить</button></form>")
+        if managed:
+            actions.append(f"<a class='ghost' href='/download/{download_name}'>Скачать</a>{qr_link(peer.get('name', peer['public_key']) + '.conf')}")
         cards.append(f"""
         <div class='client-card'>
           <div class='head'>
@@ -3389,20 +3852,22 @@ def build_clients_page(message="", error="", active_page="amnezia", page_title="
               <div class='name'>{name}</div>
               <div class='status-line' style='margin-top:8px'>
                 <span class='status-pill {status_class}' data-vpn-status-id='{status_id}'><span class='status-dot'></span><span class='status-text'>{status_text}</span></span>
-                {'<span class=\'status-pill\'><span class=\'status-dot\'></span>управляемый</span>' if managed else '<span class=\'status-pill\'><span class=\'status-dot\'></span>legacy</span>'}
+                {'<span class=\'status-pill\'><span class=\'status-dot\'></span>активный профиль</span>' if managed and enabled else ('<span class=\'status-pill bad\'><span class=\'status-dot\'></span>выключен</span>' if managed else '<span class=\'status-pill\'><span class=\'status-dot\'></span>legacy</span>')}
               </div>
             </div>
-            <span class='badge'><code>{ip}</code></span>
+            <div class='top-right'>
+              <span class='badge'><code>{ip}</code></span>
+              <a class='ghost traffic-link' href='/traffic?kind=amnezia&ident={quote((peer.get('ip') or ip_raw).split('/', 1)[0], safe='')}'>Трафик</a>
+            </div>
           </div>
           <div class='meta'>
             <div class='row'><span>IP подключения</span><strong data-vpn-ip-id='{status_id}'>{html.escape(host_from_hostport(peer.get('endpoint', '-')))}</strong></div>
             <div class='row'><span>Handshake</span><strong>{html.escape(peer.get('last_seen', '-'))}</strong></div>
             <div class='row'><span>Трафик</span><strong>{transfer}</strong></div>
-            <div class='row'><span>Ключ</span><strong><code>{pub}</code></strong></div>
+            <div class='row'><span>Ключ</span><strong>{pub}</strong></div>
           </div>
           <div class='actions'>
-            {f"<a class='ghost' href='/download/{download_name}'>Скачать</a>{qr_link(peer.get('name', peer['public_key']) + '.conf')}" if managed else ''}
-            <form method='post' action='/delete'><input type='hidden' name='return_to' value='{html.escape(path)}' /><input type='hidden' name='public_key' value='{pub}' /><button class='danger' type='submit'>Удалить</button></form>
+            {''.join(actions)}
           </div>
         </div>
         """)
@@ -3413,7 +3878,7 @@ def build_clients_page(message="", error="", active_page="amnezia", page_title="
         <div class='hero-left' style='min-height:220px'><div class='hex'></div></div>
         <div class='hero-right'>
           <div class='section-title'><h2><span class='ico'>{icon('clients')}</span>Добавить клиента</h2><span class='badge'>{managed_count} управляемых</span></div>
-          <form method='post' action='/add'><div class='grid2'><input name='name' placeholder='Имя клиента' autocomplete='off' /><label class='mini' style='display:flex;align-items:center;gap:10px;margin:0'><input type='checkbox' name='iphone' value='1' /> iPhone</label><input type='hidden' name='return_to' value='{html.escape(path)}' /><button type='submit' class='pillbtn'>Добавить</button></div></form>
+          {client_add_form('/add', path, 'Добавить клиент')}
           <p class='mini'>Карта клиента показывает статус подключения, IP и последнее рукопожатие.</p>
         </div>
       </div>
@@ -3471,14 +3936,15 @@ def build_wireguard_page(message="", error=""):
         if client_alerts:
             pills.append(client_pill("!", "bad"))
         rows = [
-            client_row("IP подключения", f"<code data-vpn-ip-id='{stable_dom_id('wg', client.get('public_key') or client.get('name'))}'>{html.escape(host_from_hostport(peer.get('endpoint') if peer else '-'))}</code>"),
-            client_row("IP", f"<code>{html.escape(client.get('ip', '-'))}</code>"),
-            client_row("PublicKey", f"<code>{html.escape(client.get('public_key', '-'))}</code>"),
+            client_row("IP подключения", f"<strong data-vpn-ip-id='{stable_dom_id('wg', client.get('public_key') or client.get('name'))}'>{html.escape(host_from_hostport(peer.get('endpoint') if peer else '-'))}</strong>"),
+            client_row("Handshake", html.escape(state.get("status", "-"))),
+            client_row("Трафик", html.escape(peer.get('transfer', '-')) if peer else '-'),
+            client_row("Ключ", html.escape(client.get('public_key', '-'))),
         ]
         actions = [toggle_form('/wireguard-toggle', '/wireguard', 'public_key', client['public_key'], 'Включить', 'pillbtn') if not enabled else toggle_form('/wireguard-toggle', '/wireguard', 'public_key', client['public_key'], 'Отключить', 'danger'), delete_form('/wireguard-delete', '/wireguard', 'public_key', client['public_key'])]
         if enabled:
             actions.append(f"<a class='ghost' href='/download/{quote(client['name'] + '.conf', safe='')}'>Скачать</a>{qr_link(client['name'] + '.conf')}")
-        cards.append(client_card_html(client["name"], client["public_key"][:12], pills, rows, "CONFIG", wireguard_client_uri(client), ''.join(actions), "Стандартный WireGuard профиль, отдельный от AmneziaWG."))
+        cards.append(client_card_html(client["name"], client.get("ip", "-"), pills, rows, "CONFIG", wireguard_client_uri(client), ''.join(actions), "", top_action=traffic_monitor_link("wireguard", client.get("ip") or client.get("public_key") or "")))
     body = f"""
     <div class='section vpn-page' data-vpn-tab='wireguard'>
       <div class='section-title'><h2><span class='ico'>{icon('clients')}</span>WireGuard</h2><span class='badge' data-vpn-count>{connected}/{len(clients)} подключены</span></div>
@@ -3534,14 +4000,23 @@ def profile_action_links(name):
 
 
 def client_add_form(action, return_to, button_text, placeholder="Имя клиента", checkbox_label="iPhone"):
+    options = []
+    choices = public_host_choices()
+    selected = choices[0] if choices else ""
+    if choices:
+        for host in choices:
+            mark = " selected" if host == selected else ""
+            options.append(f"<option value='{html.escape(host)}'{mark}>{html.escape(host)}</option>")
+    else:
+        options.append("<option value='' selected disabled>Нет внешних адресов</option>")
     return f"""
     <form method='post' action='{html.escape(action)}'>
       <input type='hidden' name='return_to' value='{html.escape(return_to)}' />
       <div class='grid2'>
         <input name='name' placeholder='{html.escape(placeholder)}' autocomplete='off' />
-        <label class='mini' style='display:flex;align-items:center;gap:10px;justify-self:end;margin:0'><input type='checkbox' name='iphone' value='1' /> {html.escape(checkbox_label)}</label>
+        <select name='endpoint'>{''.join(options)}</select>
       </div>
-      <div class='actions' style='margin-top:12px'><button type='submit' class='pillbtn'>{html.escape(button_text)}</button></div>
+      <div class='actions' style='margin-top:12px;align-items:center;justify-content:space-between'><label class='mini' style='display:flex;align-items:center;gap:10px;margin:0'><input type='checkbox' name='iphone' value='1' /> {html.escape(checkbox_label)}</label><button type='submit' class='pillbtn'>{html.escape(button_text)}</button></div>
     </form>
     """
 
@@ -3562,15 +4037,17 @@ def qr_link(profile_name, label="QR"):
 
 
 def openvpn_profile_summary(name):
-    host, port = openvpn_server_host_port()
+    clients = load_openvpn_clients(sync_profiles=False)
+    client = next((item for item in clients if item.get("name") == path_safe_name(name)), None)
+    host = client_public_host(client) if client else detect_public_host()
+    _, port = openvpn_server_host_port()
     return f"client · proto udp · remote {host} {port} · tls-crypt · {name}.ovpn"
 
 
-def client_card_html(name, top_badge, pills, rows, profile_label, profile_value, actions, note=""):
+def client_card_html(name, top_badge, pills, rows, profile_label, profile_value, actions, note="", top_action=""):
     badge_html = f"<span class='badge'><code>{html.escape(top_badge)}</code></span>" if top_badge else ""
     pills_html = ''.join(pills)
     rows_html = ''.join(rows)
-    profile_html = f"<div class='profile'><span class='label'>{html.escape(profile_label)}</span><code>{html.escape(profile_value)}</code></div>" if profile_value else ""
     note_html = f"<p class='mini' style='margin-top:12px'>{html.escape(note)}</p>" if note else ""
     return f"""
     <div class='client-card'>
@@ -3579,9 +4056,9 @@ def client_card_html(name, top_badge, pills, rows, profile_label, profile_value,
           <div class='name'>{html.escape(name)}</div>
           <div class='status-line' style='margin-top:8px'>{pills_html}</div>
         </div>
-        {badge_html}
+        <div class='top-right'>{badge_html}{top_action}</div>
       </div>
-      <div class='meta'>{rows_html}{profile_html}</div>
+      <div class='meta'>{rows_html}</div>
       <div class='actions'>{actions}</div>
       {note_html}
     </div>
@@ -3625,17 +4102,17 @@ def build_openvpn_page(message="", error=""):
             pills.append(client_pill("iPhone"))
         if client_alerts:
             pills.append(client_pill("!", "bad"))
-        host, port = openvpn_server_host_port()
         rows = [
-            client_row("IP подключения", f"<code data-vpn-ip-id='{stable_dom_id('ovpn', name)}'>{html.escape(ips.get(name, '-'))}</code>"),
-            client_row("Формат", "<code>ovpn</code>"),
-            client_row("Файл", f"<code>{html.escape(name)}.ovpn</code>"),
+            client_row("IP подключения", f"<strong data-vpn-ip-id='{stable_dom_id('ovpn', name)}'>{html.escape(ips.get(name, '-'))}</strong>"),
+            client_row("Handshake", html.escape(states.get(name, '-'))),
+            client_row("Трафик", "-"),
+            client_row("Ключ", html.escape(name)),
         ]
         actions = toggle_form('/openvpn-toggle', '/openvpn', 'name', name, 'Включить', 'pillbtn') if not enabled else toggle_form('/openvpn-toggle', '/openvpn', 'name', name, 'Отключить', 'danger')
         actions += delete_form('/openvpn-delete', '/openvpn', 'name', name)
         if enabled:
             actions += f"<a class='ghost' href='/download/{quote(name + '.ovpn', safe='')}'>Скачать</a>{qr_link(name + '.ovpn')}"
-        cards.append(client_card_html(name, name, pills, rows, "CONF", openvpn_profile_summary(name), actions, "Полный профиль можно скачать или открыть по QR."))
+        cards.append(client_card_html(name, client.get("ip") or client.get("endpoint") or "-", pills, rows, "CONF", openvpn_profile_summary(name), actions, "", top_action=traffic_monitor_link("openvpn", client.get("ip") or name or "")))
     body = f"""
     <div class='section vpn-page' data-vpn-tab='openvpn'>
       <div class='section-title'><h2><span class='ico'>{icon('services')}</span>OpenVPN</h2><span class='badge' data-vpn-count>{connected}/{len(clients)} подключены</span></div>
@@ -3692,15 +4169,16 @@ def build_hysteria_page(message="", error=""):
         if client_alerts:
             pills.append(client_pill("!", "bad"))
         rows = [
-            client_row("IP подключения", f"<code data-vpn-ip-id='{stable_dom_id('hysteria', username)}'>{html.escape(ips.get(username, '-'))}</code>"),
-            client_row("Username", f"<code>{html.escape(username)}</code>"),
-            client_row("Password", f"<code>{html.escape(client['password'])}</code>"),
+            client_row("IP подключения", f"<strong data-vpn-ip-id='{stable_dom_id('hysteria', username)}'>{html.escape(ips.get(username, '-'))}</strong>"),
+            client_row("Handshake", html.escape(status)),
+            client_row("Трафик", "-"),
+            client_row("Ключ", html.escape(username)),
         ]
         actions = toggle_form('/hysteria-toggle', '/hysteria', 'username', username, 'Включить', 'pillbtn') if not enabled else toggle_form('/hysteria-toggle', '/hysteria', 'username', username, 'Отключить', 'danger')
         actions += delete_form('/hysteria-delete', '/hysteria', 'username', username)
         if enabled:
             actions += hysteria_profile_action_links(name)
-        cards.append(client_card_html(name, username, pills, rows, "URI", hysteria_client_uri(client), actions, "URI готов для Hiddify/Shadowrocket и других клиентов Hysteria 2."))
+        cards.append(client_card_html(name, client.get("endpoint") or "-", pills, rows, "URI", hysteria_client_uri(client), actions, "", top_action=traffic_monitor_link("hysteria", username or "")))
     body = f"""
     <div class='section vpn-page' data-vpn-tab='hysteria'>
       <div class='section-title'><h2><span class='ico'>{icon('hysteria')}</span>Hysteria</h2><span class='badge' data-vpn-count>{connected}/{len(clients)} подключены</span></div>
@@ -3758,15 +4236,16 @@ def build_vless_page(message="", error=""):
         if client_alerts:
             pills.append(client_pill("!", "bad"))
         rows = [
-            client_row("IP подключения", f"<code data-vpn-ip-id='{stable_dom_id('vless', client.get('uuid') or name)}'>{html.escape(ips.get(name, '-'))}</code>"),
-            client_row("UUID", f"<code>{html.escape(client['uuid'])}</code>"),
-            client_row("Flow", f"<code>{html.escape(config.get('flow', 'xtls-rprx-vision'))}</code>"),
+            client_row("IP подключения", f"<strong data-vpn-ip-id='{stable_dom_id('vless', client.get('uuid') or name)}'>{html.escape(ips.get(name, '-'))}</strong>"),
+            client_row("Handshake", html.escape(status)),
+            client_row("Трафик", "-"),
+            client_row("Ключ", html.escape(client['uuid'])),
         ]
         actions = toggle_form('/vless-toggle', '/vless', 'uuid', client['uuid'], 'Включить', 'pillbtn') if not enabled else toggle_form('/vless-toggle', '/vless', 'uuid', client['uuid'], 'Отключить', 'danger')
         actions += delete_form('/vless-delete', '/vless', 'uuid', client['uuid'])
         if enabled:
             actions += profile_action_links(client['name'])
-        cards.append(client_card_html(client['name'], client['uuid'], pills, rows, "URI", vless_client_uri(client, config), actions, "URI готов для Hiddify/Shadowrocket и Amnezia."))
+        cards.append(client_card_html(client['name'], client.get("endpoint") or "-", pills, rows, "URI", vless_client_uri(client, config), actions, "", top_action=traffic_monitor_link("vless", client.get("uuid") or client['name'] or "")))
     body = f"""
     <div class='section vpn-page' data-vpn-tab='vless'>
       <div class='section-title'><h2><span class='ico'>{icon('vless')}</span>VLESS / Reality</h2><span class='badge' data-vpn-count>{connected}/{len(clients)} подключены</span></div>
@@ -3787,6 +4266,82 @@ def build_vless_page(message="", error=""):
     <div class='section' style='margin-top:16px'><div class='actions'><form method='post' action='/service'><input type='hidden' name='return_to' value='/vless' /><input type='hidden' name='name' value='xray' /><input type='hidden' name='action' value='restart' /><button type='submit'>Перезапустить</button></form><a class='ghost' href='/services'>Все сервисы</a></div></div>
     """
     return build_shell("VLESS", "vless", body, message, error)
+
+
+def build_traffic_page(message="", error="", kind="", ident=""):
+    kind = str(kind or "").strip()
+    ident = str(ident or "").strip()
+    kind_labels = {
+        "amnezia": "AmneziaWG",
+        "wireguard": "WireGuard",
+        "openvpn": "OpenVPN",
+        "hysteria": "Hysteria",
+        "vless": "VLESS",
+    }
+    data = traffic_entries(kind, ident, days=7, limit=500)
+    supported = data["supported"]
+    source_ip = data["source_ip"]
+    entries = data["entries"]
+    client_name = traffic_client_name_by_ip(kind, source_ip)
+    rows = []
+    for entry in entries:
+        src_label = html.escape(entry.get("src_host") or entry["src"])
+        dst_label = html.escape(entry.get("dst_host") or entry["dst"])
+        src_title = html.escape(entry["src"])
+        dst_title = html.escape(entry["dst"])
+        detail_id = f"traffic-detail-{entry['key']}"
+        raw_text = html.escape(entry.get("raw") or "")
+        rows.append(
+            f"<tr class='traffic-row' data-traffic-toggle='1' data-traffic-target='{detail_id}' role='button' tabindex='0' aria-expanded='false'>"
+            f"<td title='{html.escape(entry['time'])}'>{html.escape(entry.get('time_human') or entry['time'])}</td>"
+            f"<td><code title='{src_title}'>{src_label}</code></td>"
+            f"<td><code title='{dst_title}'>{dst_label}</code>:<code>{html.escape(entry['dport'])}</code></td>"
+            f"<td>{html.escape(entry['proto'])}</td>"
+            f"<td><code>{html.escape(entry['in'])}</code> → <code>{html.escape(entry['out'])}</code></td>"
+            f"</tr>"
+            f"<tr id='{detail_id}' class='traffic-detail' hidden>"
+            f"<td colspan='5'>"
+            f"<div class='traffic-detail-grid'>"
+            f"<div><span>Время</span><strong>{html.escape(entry.get('time_human') or entry['time'])}</strong></div>"
+            f"<div><span>От</span><strong><code>{src_title}</code> {src_label if entry.get('src_host') and entry.get('src_host') != entry['src'] else ''}</strong></div>"
+            f"<div><span>Куда</span><strong><code>{dst_title}</code> {dst_label if entry.get('dst_host') and entry.get('dst_host') != entry['dst'] else ''}</strong></div>"
+            f"<div><span>Протокол</span><strong>{html.escape(entry['proto'])}</strong></div>"
+            f"<div><span>Порты</span><strong>{html.escape(entry.get('sport', '-'))} → {html.escape(entry.get('dport', '-'))}</strong></div>"
+            f"<div><span>Интерфейсы</span><strong><code>{html.escape(entry['in'])}</code> → <code>{html.escape(entry['out'])}</code></strong></div>"
+            f"</div>"
+            f"<div class='traffic-raw'><span>Сырой лог</span><pre>{raw_text}</pre></div>"
+            f"</td></tr>"
+        )
+    table = ''.join(rows) or "<tr><td colspan='5'>Нет данных за последние 7 дней</td></tr>"
+    title = kind_labels.get(kind, kind or "клиент")
+    client_label = f"{client_name} ({source_ip})" if client_name else (source_ip or "-")
+    note = ""
+    if not supported:
+        note = "Пока доступно только для клиентов с внутренним VPN IP: AmneziaWG, WireGuard и OpenVPN."
+    elif not source_ip:
+        note = "Не найден внутренний VPN IP для этого клиента."
+    dns_logger = service_status("vpn-dns-log") if "vpn-dns-log" in SERVICE_MAP else {"active": "inactive", "unit": "vpn-dns-log.service"}
+    dns_logger_label = {'active': 'активен', 'inactive': 'неактивен', 'failed': 'ошибка'}.get(dns_logger['active'], dns_logger['active'])
+    dns_note = "Домены подставляются из DNS-запросов клиента. Если клиент использует DoH/DoT или внешний DNS мимо сервера, доменов может не быть."
+    body = f"""
+    <div class='section' data-traffic-root data-traffic-kind='{html.escape(kind)}' data-traffic-ident='{html.escape(ident, quote=True)}' data-traffic-source='{html.escape(source_ip, quote=True)}'>
+      <div class='section-title'><h2><span class='ico'>{icon('chart')}</span>Трафик клиента</h2><span class='badge'>{html.escape(title)}</span></div>
+      <div class='rule-chips'>
+        <span class='rule-chip good'>Хранение: 7 дней</span>
+        <span class='rule-chip'>{html.escape(client_label)}</span>
+        <span class='rule-chip' data-traffic-refresh-state>обновляется</span>
+        <span class='rule-chip'>DNS: {html.escape(dns_logger_label)}</span>
+      </div>
+      <p class='mini' style='margin-top:8px'>Показывается только {html.escape(client_label)}.</p>
+      {f"<p class='mini' style='margin-top:12px'>{html.escape(note)}</p>" if note else ''}
+      <p class='mini' style='margin-top:8px'>{html.escape(dns_note)}</p>
+    </div>
+    <div class='section' style='margin-top:16px'>
+      <div class='section-title'><h2><span class='ico'>{icon('clients')}</span>Журнал обращений</h2><span class='badge'>{len(entries)} строк</span></div>
+      <div class='tablewrap traffic-tablewrap'><table><thead><tr><th>Время</th><th>От</th><th>Куда</th><th>Proto</th><th>Интерфейсы</th></tr></thead><tbody data-traffic-body>{table}</tbody></table></div>
+    </div>
+    """
+    return build_shell(f"Трафик {title}", "clients", body, message, error)
 
 
 def build_panel_users_page(message="", error=""):
@@ -3852,7 +4407,7 @@ def build_panel_users_page(message="", error=""):
 
 
 def build_services_page(message="", error=""):
-    services = [service_status(k) for k in ["awg", "openvpn", "softether", "panel", "fail2ban", "vpn-iptables", "openvpn-iptables"] if k in SERVICE_MAP]
+    services = [service_status(k) for k in ["awg", "openvpn", "softether", "panel", "fail2ban", "vpn-iptables", "openvpn-iptables", "vpn-traffic-log"] if k in SERVICE_MAP]
     label_map = SERVICE_LABELS
     cards = []
     for svc in services:
@@ -4149,6 +4704,7 @@ def build_firewall_page(message="", error=""):
       <div class='actions'>
         <form method='post' action='/service'><input type='hidden' name='return_to' value='/firewall' /><input type='hidden' name='name' value='vpn-iptables' /><input type='hidden' name='action' value='restart' /><button type='submit'>VPN firewall</button></form>
         <form method='post' action='/service'><input type='hidden' name='return_to' value='/firewall' /><input type='hidden' name='name' value='openvpn-iptables' /><input type='hidden' name='action' value='restart' /><button type='submit'>OpenVPN firewall</button></form>
+        <form method='post' action='/service'><input type='hidden' name='return_to' value='/firewall' /><input type='hidden' name='name' value='vpn-traffic-log' /><input type='hidden' name='action' value='restart' /><button type='submit'>Traffic log</button></form>
       </div>
     </div>
     """
@@ -4593,6 +5149,18 @@ class Handler(BaseHTTPRequestHandler):
                     raise FileNotFoundError
                 self._send(200, json.dumps(payload_map[tab](), ensure_ascii=False), content_type="application/json; charset=utf-8")
                 return
+            if parsed.path == "/api/traffic":
+                q = parse_qs(parsed.query)
+                kind = q.get("kind", [""])[0]
+                ident = q.get("ident", [""])[0]
+                self._send(200, json.dumps(traffic_entries(kind, ident, days=7, limit=500), ensure_ascii=False), content_type="application/json; charset=utf-8")
+                return
+            if parsed.path == "/traffic":
+                q = parse_qs(parsed.query)
+                kind = q.get("kind", [""])[0]
+                ident = q.get("ident", [""])[0]
+                self._send(200, build_traffic_page(kind=kind, ident=ident))
+                return
             if parsed.path == "/logs":
                 unit = parse_qs(parsed.query).get("unit", [""])[0]
                 self._send(200, build_logs_page(unit=unit))
@@ -4727,14 +5295,16 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/add":
                 name = form.get("name", [""])[0]
                 iphone = form.get("iphone", [""])[0] == "1"
-                client = add_client(name, iphone=iphone)
+                endpoint = form.get("endpoint", [""])[0]
+                client = add_client(name, iphone=iphone, endpoint=endpoint)
                 audit_event("add_client", client.get("name", name))
                 self._redirect(return_to or "/clients")
                 return
             if self.path == "/wireguard-add":
                 name = form.get("name", [""])[0]
                 iphone = form.get("iphone", [""])[0] == "1"
-                client = add_wireguard_client(name, iphone=iphone)
+                endpoint = form.get("endpoint", [""])[0]
+                client = add_wireguard_client(name, iphone=iphone, endpoint=endpoint)
                 audit_event("wireguard_add", client.get("name", name))
                 self._redirect(return_to or "/wireguard")
                 return
@@ -4743,6 +5313,13 @@ class Handler(BaseHTTPRequestHandler):
                 remove_client(public_key)
                 audit_event("delete_client", public_key[:16])
                 self._redirect(return_to or "/clients")
+                return
+            if self.path == "/awg-toggle":
+                public_key = form.get("public_key", [""])[0]
+                current = next((c for c in load_state().get("clients", []) if c.get("public_key") == public_key), None)
+                toggle_client(public_key, not bool(current and current.get("enabled", True)))
+                audit_event("awg_toggle", public_key[:16])
+                self._redirect(return_to or "/amnezia")
                 return
             if self.path == "/wireguard-delete":
                 public_key = form.get("public_key", [""])[0]
@@ -4759,7 +5336,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/openvpn-add":
                 name = form.get("name", [""])[0]
-                client = add_openvpn_client(name)
+                iphone = form.get("iphone", [""])[0] == "1"
+                endpoint = form.get("endpoint", [""])[0]
+                client = add_openvpn_client(name, iphone=iphone, endpoint=endpoint)
                 audit_event("openvpn_add", client.get("name", name))
                 self._redirect(return_to or "/openvpn")
                 return
@@ -4778,7 +5357,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/hysteria-add":
                 name = form.get("name", [""])[0]
-                client = add_hysteria_client(name)
+                iphone = form.get("iphone", [""])[0] == "1"
+                endpoint = form.get("endpoint", [""])[0]
+                client = add_hysteria_client(name, iphone=iphone, endpoint=endpoint)
                 audit_event("hysteria_add", client.get("name", name))
                 self._redirect(return_to or "/hysteria")
                 return
@@ -4797,7 +5378,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/vless-add":
                 name = form.get("name", [""])[0]
-                client = add_vless_client(name)
+                iphone = form.get("iphone", [""])[0] == "1"
+                endpoint = form.get("endpoint", [""])[0]
+                client = add_vless_client(name, iphone=iphone, endpoint=endpoint)
                 audit_event("vless_add", client.get("name", name))
                 self._redirect(return_to or "/vless")
                 return
