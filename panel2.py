@@ -102,7 +102,7 @@ NAV_ITEMS = [
     ("domains", "/domains", "shield", "Домены"),
     ("fail2ban", "/fail2ban", "shield", "Fail2Ban"),
     ("audit", "/audit", "system", "Аудит"),
-    ("panel-users", "/panel-users", "users", "Пользователи панели"),
+    ("panel-settings", "/panel-settings", "configs", "Настройки"),
     ("configs", "/configs", "configs", "Конфиги"),
     ("firewall", "/firewall", "firewall", "Фаервол"),
 ]
@@ -112,7 +112,7 @@ NAV_GROUPS = [
     ("VPN", ["amnezia", "wireguard", "openvpn", "hysteria", "vless"]),
     ("Сервер", ["services", "server-users", "storage", "processes", "logs", "tasks"]),
     ("Сеть", ["sstp", "domains", "firewall"]),
-    ("Администрирование", ["fail2ban", "audit", "panel-users", "configs"]),
+    ("Администрирование", ["fail2ban", "audit", "panel-settings", "configs"]),
 ]
 
 NAV_FEATURES = {
@@ -182,6 +182,7 @@ DEFAULT_SETTINGS = {
         "emqx": True,
     },
     "network": {"speed_cap_mbps": 200},
+    "panel": {"home_note": "", "show_endpoint": True, "show_health_cards": True, "traffic_days": 7},
     "downloads": {
         "AmneziaWG (старый)": "/etc/wireguard/wg0.conf",
         "AmneziaWG": "/etc/amnezia/amneziawg/awg0.conf",
@@ -262,6 +263,30 @@ def load_settings():
         except Exception:
             pass
     return DEFAULT_SETTINGS
+
+
+def save_settings(settings):
+    CFG["settings_file"].write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def panel_traffic_days():
+    panel = SETTINGS.get("panel", {}) if isinstance(SETTINGS, dict) else {}
+    try:
+        days = int(panel.get("traffic_days", 7))
+    except Exception:
+        days = 7
+    return max(1, min(days, 7))
+
+
+def parse_web_ports(text, fallback=None):
+    fallback = fallback if fallback is not None else ["80", "443", "8443"]
+    raw = str(text or "").replace("/", ",")
+    items = []
+    for token in re.split(r"[\s,]+", raw):
+        token = token.strip()
+        if token and token not in items:
+            items.append(token)
+    return items or list(fallback)
 
 
 SETTINGS = load_settings()
@@ -1868,6 +1893,33 @@ input:focus, select:focus { border-color: rgba(24,211,155,.7); box-shadow: 0 0 0
 .tile-link strong { font-size:16px; }
 .tile-link span:last-child { color:var(--muted); font-size:13px; }
 .tile-link:hover { border-color:rgba(124,92,255,.4); transform: translateY(-1px); }
+.settings-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+.settings-card { min-height:190px; padding:22px; border-radius:24px; border:1px solid rgba(160,171,192,.18); background:linear-gradient(145deg,rgba(34,41,57,.96),rgba(15,19,29,.96)); color:var(--text); text-decoration:none; display:flex; flex-direction:column; transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease; }
+.settings-card:hover { transform:translateY(-3px); border-color:rgba(124,92,255,.52); box-shadow:0 22px 55px rgba(0,0,0,.3); }
+.settings-card .ico { width:44px; height:44px; border-radius:15px; margin-bottom:24px; }
+.settings-card strong { font-size:21px; }
+.settings-card p { color:var(--muted); line-height:1.5; margin:9px 0 18px; }
+.settings-card .settings-open { color:#a99bff; font-size:13px; font-weight:800; margin-top:auto; }
+.settings-back { display:inline-flex; align-items:center; gap:8px; color:var(--muted); text-decoration:none; font-weight:700; margin-bottom:14px; }
+.settings-back:hover { color:var(--text); }
+.users-toolbar { display:grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, .9fr); gap:16px; align-items:start; }
+.users-hero { padding:20px; border-radius:24px; border:1px solid rgba(160,171,192,.18); background:linear-gradient(160deg, rgba(34,41,57,.96), rgba(15,19,29,.96)); }
+.users-hero h3 { margin:0 0 8px; font-size:22px; }
+.users-hero p { margin:0; color:var(--muted); line-height:1.5; }
+.users-grid { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:16px; }
+.user-card { padding:0; border-radius:22px; border:1px solid rgba(160,171,192,.18); background:linear-gradient(160deg, rgba(34,41,57,.96), rgba(15,19,29,.96)); overflow:hidden; }
+.user-card > summary { list-style:none; cursor:pointer; display:flex; justify-content:space-between; align-items:flex-start; gap:12px; padding:18px; }
+.user-card > summary::-webkit-details-marker { display:none; }
+.user-card-body { padding:0 18px 18px; border-top:1px solid rgba(160,171,192,.12); }
+.user-card-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+.user-name { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.user-name strong { font-size:20px; overflow-wrap:anywhere; }
+.user-name code { display:inline-flex; width:fit-content; max-width:100%; }
+.user-role, .user-2fa { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.user-mini { color:var(--muted); font-size:13px; line-height:1.45; }
+.user-actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.user-actions .pillbtn, .user-actions .ghost, .user-actions .danger { min-height:42px; }
+.users-empty { padding:20px; border-radius:22px; border:1px dashed var(--line); color:var(--muted); background:rgba(255,255,255,.02); }
 .kv-grid { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:12px; }
 .kv { padding:14px 16px; border-radius:16px; border:1px solid var(--line); background:#191d25; display:flex; justify-content:space-between; gap:12px; align-items:center; }
 .kv span { color:var(--muted); }
@@ -1910,6 +1962,8 @@ pre { margin:0; padding:14px; border-radius:16px; background:#0e1117; border:1px
 .qr-modal-body img { width:min(82vw, 420px); height:auto; background:#fff; border-radius:18px; padding:12px; }
 .qr-modal[hidden], .qr-modal-backdrop[hidden] { display:none !important; }
 @media (max-width: 1200px) { .quick-grid { grid-template-columns: repeat(3, minmax(0,1fr)); } }
+@media (max-width: 1100px) { .settings-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width: 1100px) { .users-toolbar, .users-grid { grid-template-columns:1fr; } }
 @media (max-width: 1100px) { .widgets { grid-template-columns: 1fr 1fr; } .hero { grid-template-columns: 1fr; } .kv-grid { grid-template-columns: 1fr; } .monitor-grid, .client-grid, .rule-grid, .sys-grid, .sys-summary, .sys-row { grid-template-columns: 1fr 1fr; } .sys-hero { grid-template-columns: 1fr; } }
 @media (max-width: 780px) { .app { grid-template-columns: 1fr; } .sidebar { display:none; } .menu-btn { display:inline-flex; } .topbar { padding:12px 14px 8px; z-index:20; } .topbar-row { gap:10px; align-items:flex-start; } .title { font-size:20px; } .user { display:none; } .widgets, .dual, .monitor-grid, .client-grid, .rule-grid, .sys-grid { grid-template-columns: 1fr; } .hero { grid-template-columns:1fr; padding:12px; } .hero-left { min-height:160px; } .page { padding:10px 10px 16px; } .quick-grid { grid-template-columns: 1fr; } .widget { padding:14px; } .section { padding:14px; } .monitor-card { padding:16px; } .monitor-kpis { grid-template-columns: 1fr; } .kpi { padding:12px; } .section-title { align-items:flex-start; flex-direction:column; } .actions { flex-direction:column; align-items:stretch; } .actions form, .actions a, .actions button { width:100%; } .grid2 { grid-template-columns:1fr; } .tablewrap { margin:0 -2px; } .client-card .actions { display:grid; grid-template-columns:1fr 1fr 1fr; } .client-card .actions .ghost, .client-card .actions .danger { width:100%; } .mobile-drawer { display:block; position:fixed; top:0; left:0; width:min(84vw, 320px); height:100vh; background: linear-gradient(180deg, #161a23, #11141a); border-right:1px solid var(--line); box-shadow: 22px 0 60px rgba(0,0,0,.45); transform: translateX(-102%); transition: transform .2s ease; z-index:40; } body.drawer-open .mobile-drawer { transform: translateX(0); } .drawer-backdrop { display:block; position:fixed; inset:0; background: rgba(5,7,12,.56); opacity:0; pointer-events:none; transition: opacity .2s ease; z-index:35; } body.drawer-open .drawer-backdrop { opacity:1; pointer-events:auto; } .drawer-panel { height:100%; display:flex; flex-direction:column; padding:16px; gap:14px; } .drawer-header { display:flex; align-items:center; justify-content:space-between; gap:10px; } .drawer-title { display:flex; align-items:center; gap:12px; font-weight:800; } .drawer-links { display:grid; gap:8px; } .drawer-link { display:flex; align-items:center; gap:12px; padding:12px 14px; border-radius:16px; border:1px solid var(--line); text-decoration:none; color:var(--text); background:#171b24; } .drawer-link.active { background: linear-gradient(135deg, rgba(124,92,255,.22), rgba(76,125,255,.16)); border-color: rgba(124,92,255,.42); } .drawer-link svg { width:18px; height:18px; } .drawer-footer { margin-top:auto; display:grid; gap:10px; } }
 /* Modern compact redesign layer */
@@ -1982,7 +2036,7 @@ html, body { width:100%; max-width:100%; overflow-x:hidden; }
   .topbar-row { display:grid; grid-template-columns:42px minmax(0,1fr) 42px; align-items:center; gap:10px; }
   .title { font-size:22px; line-height:1.1; overflow-wrap:anywhere; }
   .top-actions { justify-content:flex-end; }
-  .monitor-grid, .client-grid, .rule-grid, .sys-grid, .widgets, .dual, .quick-grid { grid-template-columns:1fr; }
+  .monitor-grid, .client-grid, .rule-grid, .sys-grid, .widgets, .dual, .quick-grid, .settings-grid { grid-template-columns:1fr; }
   .monitor-card, .client-card, .sys-card, .rule-tile, .section { padding:14px; border-radius:20px; }
   .monitor-kpis { display:grid; grid-template-columns:1fr; overflow:visible; }
   .kpi { min-width:0; }
@@ -2870,7 +2924,7 @@ def update_backup_settings(form):
     scope = form.get("scope", [settings["scope"]])[0]
     schedule = form.get("schedule", [settings["schedule"]])[0]
     custom_calendar = form.get("custom_calendar", [settings["custom_calendar"]])[0].strip()
-    schedule_enabled = form.get("schedule_enabled", [""])[0] == "on"
+    schedule_enabled = form.get("schedule_enabled", [""])[-1] == "on"
     if target_type not in {"local", "rsync"}:
         raise RuntimeError("неверный тип назначения")
     if scope not in {"critical", "system"}:
@@ -2892,6 +2946,43 @@ def update_backup_settings(form):
     configure_backup_timer(settings)
     audit_event("backup_settings", f"{target_type} {scope} {backup_on_calendar(settings)} enabled={schedule_enabled}")
     return settings
+
+
+def update_panel_settings(form):
+    global SETTINGS
+    settings = load_settings()
+    panel = dict(settings.get("panel", {}))
+    network = dict(settings.get("network", {}))
+    features = dict(settings.get("features", {}))
+    if "home_note" in form:
+        panel["home_note"] = form["home_note"][0].strip()
+    if "show_endpoint" in form:
+        panel["show_endpoint"] = form["show_endpoint"][-1] == "on"
+    if "show_health_cards" in form:
+        panel["show_health_cards"] = form["show_health_cards"][-1] == "on"
+    if "traffic_days" in form:
+        try:
+            panel["traffic_days"] = max(1, min(int(form["traffic_days"][0]), 7))
+        except Exception:
+            panel["traffic_days"] = 7
+    if "speed_cap_mbps" in form:
+        try:
+            network["speed_cap_mbps"] = max(1, int(float(form["speed_cap_mbps"][0])))
+        except Exception:
+            network["speed_cap_mbps"] = 200
+    if "web_ports" in form:
+        settings["web_ports"] = parse_web_ports(form["web_ports"][0], SETTINGS.get("web_ports", ["80", "443", "8443"]))
+    for key in ["amneziawg", "wireguard", "openvpn", "hysteria", "vless", "sstp", "fail2ban", "emqx"]:
+        field = f"feature_{key}"
+        if field in form:
+            features[key] = form[field][-1] == "on"
+    settings["panel"] = panel
+    settings["network"] = network
+    settings["features"] = features
+    save_settings(settings)
+    SETTINGS = deep_merge(DEFAULT_SETTINGS, settings)
+    audit_event("panel_settings", f"show_endpoint={panel['show_endpoint']} health={panel['show_health_cards']} traffic_days={panel['traffic_days']} speed={network['speed_cap_mbps']} note={'yes' if panel['home_note'] else 'no'}")
+    return panel
 
 
 def parse_handshake_age(text):
@@ -3718,6 +3809,7 @@ if (document.querySelector('[data-traffic-root]')) {{
 
 def summary_cards(snapshot, metrics, services, peers, managed_count, legacy_count):
     status_map = {"active": "активен", "inactive": "неактивен", "failed": "ошибка", "unknown": "неизвестно"}
+    panel_cfg = SETTINGS.get("panel", {})
     service_map = {s["name"]: s for s in services}
     awg = service_map.get("awg", {"active": "unknown", "enabled": "unknown", "unit": ""})
     wireguard = service_map.get("wireguard", {"active": "unknown", "enabled": "unknown", "unit": ""})
@@ -3758,11 +3850,15 @@ def summary_cards(snapshot, metrics, services, peers, managed_count, legacy_coun
     total_clients = awg_total + wg_total + openvpn_total + hysteria_total + vless_total
     endpoint = html.escape(public_endpoint(CFG['endpoint'].split(':', 1)[1] if ':' in CFG['endpoint'] else '443'))
     office_sstp_status = html.escape(status_map.get(office_sstp['active'], office_sstp['active']))
+    home_note = str(panel_cfg.get("home_note", "") or "").strip()
+    show_endpoint = bool(panel_cfg.get("show_endpoint", True))
+    show_health_cards = bool(panel_cfg.get("show_health_cards", True))
     return f"""
     <section class='ops-hero summary-only'>
       <div class='ops-headline'>
         <span class='ops-eyebrow'>server control center</span>
         <h1>Краткая сводка</h1>
+        {f"<p>{html.escape(home_note)}</p>" if home_note else ''}
         <div class='ops-mini-grid'>
           <div class='ops-mini-card'><span>Все VPN</span><strong>{total_connected}/{total_clients}</strong></div>
           <div class='ops-mini-card'><span>AmneziaWG</span><strong>{awg_connected}/{awg_total}</strong></div>
@@ -3773,11 +3869,11 @@ def summary_cards(snapshot, metrics, services, peers, managed_count, legacy_coun
           <div class='ops-mini-card'><span>Office SSTP</span><strong>{office_sstp_status}</strong></div>
           <div class='ops-mini-card'><span>Endpoint</span><strong>{endpoint}</strong></div>
         </div>
-        <div class='ops-health summary-cards'>
+        {"<div class='ops-health summary-cards'>" if show_health_cards else "<div class='ops-health summary-cards' style='display:none'>"}
           <div class='ops-health-row'><span>AmneziaWG</span><strong class='{'good' if awg['active'] == 'active' else 'bad'}'>{html.escape(status_map.get(awg['active'], awg['active']))}</strong></div>
           <div class='ops-health-row'><span>WireGuard</span><strong class='{'good' if wireguard['active'] == 'active' else 'bad'}'>{html.escape(status_map.get(wireguard['active'], wireguard['active']))}</strong></div>
           <div class='ops-health-row'><span>Office SSTP</span><strong class='{'good' if office_sstp['active'] == 'active' else 'bad'}'>{office_sstp_status}</strong></div>
-          <div class='ops-health-row'><span>Endpoint</span><strong>{endpoint}</strong></div>
+          {f"<div class='ops-health-row'><span>Endpoint</span><strong>{endpoint}</strong></div>" if show_endpoint else ''}
         </div>
       </div>
     </section>
@@ -4397,7 +4493,7 @@ def build_traffic_page(message="", error="", kind="", ident=""):
         "hysteria": "Hysteria",
         "vless": "VLESS",
     }
-    data = traffic_entries(kind, ident, days=7, limit=500)
+    data = traffic_entries(kind, ident, days=panel_traffic_days(), limit=500)
     supported = data["supported"]
     source_ip = data["source_ip"]
     entries = data["entries"]
@@ -4463,10 +4559,22 @@ def build_traffic_page(message="", error="", kind="", ident=""):
     return build_shell(f"Трафик {title}", "clients", body, message, error)
 
 
-def build_panel_users_page(message="", error=""):
+def legacy_panel_settings_page(message="", error=""):
     users = load_panel_users()
     viewer = current_request_user()
     viewer_is_admin = panel_user_is_admin(viewer)
+    panel_cfg = SETTINGS.get("panel", {})
+    network_cfg = SETTINGS.get("network", {})
+    features_cfg = SETTINGS.get("features", {})
+    backup_settings = load_backup_settings()
+    backup_timer = backup_timer_status()
+    home_note = str(panel_cfg.get("home_note", "") or "")
+    show_endpoint = bool(panel_cfg.get("show_endpoint", True))
+    show_health_cards = bool(panel_cfg.get("show_health_cards", True))
+    traffic_days = panel_traffic_days()
+    enabled_features = sum(1 for k in ["amneziawg", "wireguard", "openvpn", "hysteria", "vless", "sstp", "fail2ban", "emqx"] if features_cfg.get(k, True))
+    web_ports = "/".join(str(p) for p in SETTINGS.get("web_ports", ["80", "443", "8443"]))
+    backup_label = html.escape(f"{backup_settings.get('target_type', 'local')} · {backup_settings.get('scope', 'critical')}")
     rows = []
     for user in users:
         name = user["username"]
@@ -4508,21 +4616,313 @@ def build_panel_users_page(message="", error=""):
         else:
             rows.append(f"<tr><td><code>{uname}</code></td><td>••••••••</td><td>{admin_badge}</td><td>{totp_badge}</td><td>-</td></tr>")
     body = f"""
-    <div class='section'>
-      <div class='section-title'><h2><span class='ico'>{icon('users')}</span>Пользователи панели</h2><span class='badge'>{len(users)} шт.</span></div>
+    <form method='post' action='/panel-settings'>
+      <input type='hidden' name='return_to' value='/panel-settings' />
+      <div class='section'>
+        <div class='section-title'><h2><span class='ico'>{icon('configs')}</span>Настройки панели</h2><span class='badge'>panel.json</span></div>
+        <div class='quick-grid' style='margin-bottom:14px'>
+          <a href='#s-main' class='tile-link' onclick="document.getElementById('s-main').open=true; document.getElementById('s-summary').open=false; document.getElementById('s-network').open=false; document.getElementById('s-features').open=false; return false;"><strong>Главная</strong><span>Текст, endpoint, карточки</span></a>
+          <a href='#s-summary' class='tile-link' onclick="document.getElementById('s-summary').open=true; document.getElementById('s-main').open=false; document.getElementById('s-network').open=false; document.getElementById('s-features').open=false; return false;"><strong>Сводка</strong><span>Трафик и окно хранения</span></a>
+          <a href='#s-network' class='tile-link' onclick="document.getElementById('s-network').open=true; document.getElementById('s-main').open=false; document.getElementById('s-summary').open=false; document.getElementById('s-features').open=false; return false;"><strong>Сеть</strong><span>Порты и лимиты</span></a>
+          <a href='#s-features' class='tile-link' onclick="document.getElementById('s-features').open=true; document.getElementById('s-main').open=false; document.getElementById('s-summary').open=false; document.getElementById('s-network').open=false; return false;"><strong>Модули</strong><span>Показывать в меню</span></a>
+          <a href='#s-users' class='tile-link' onclick="document.getElementById('s-users').open=true; document.getElementById('s-main').open=false; document.getElementById('s-summary').open=false; document.getElementById('s-network').open=false; document.getElementById('s-features').open=false; return false;"><strong>Пользователи</strong><span>Доступ и 2FA</span></a>
+        </div>
+        <div class='widgets' style='margin-bottom:14px'>
+          <div class='widget'><div class='widget-head'><span class='ico'>{icon('configs')}</span><div class='label'>Главная</div></div><div class='value'>{'есть' if home_note else 'пусто'}</div><div class='sub'>{html.escape(home_note or 'без подписи')}</div></div>
+          <div class='widget'><div class='widget-head'><span class='ico'>{icon('clients')}</span><div class='label'>Traffic window</div></div><div class='value'>{traffic_days} дней</div><div class='sub'>период в `/traffic`</div></div>
+          <div class='widget'><div class='widget-head'><span class='ico'>{icon('server')}</span><div class='label'>Web ports</div></div><div class='value'>{len(SETTINGS.get('web_ports', ['80', '443', '8443']))} портов</div><div class='sub'><code>{html.escape(web_ports)}</code></div></div>
+          <div class='widget'><div class='widget-head'><span class='ico'>{icon('services')}</span><div class='label'>Backup</div></div><div class='value'>{html.escape(str(backup_timer.get('active', 'unknown')))}</div><div class='sub'>{html.escape(str(backup_timer.get('enabled', 'unknown')))} · {backup_label}</div></div>
+          <div class='widget'><div class='widget-head'><span class='ico'>{icon('shield')}</span><div class='label'>Modules</div></div><div class='value'>{enabled_features}/8</div><div class='sub'>видно в меню</div></div>
+        </div>
+        <div class='manage-grid'>
+          <details id='s-main' class='manage-card' open>
+            <summary class='manage-head'><strong>Главная</strong><span class='badge'>UI</span></summary>
+            <div class='manage-card-body'>
+              <label class='mini'>Подпись под заголовком</label>
+              <input name='home_note' value='{html.escape(home_note)}' placeholder='Например: только для админов' autocomplete='off' />
+              <label class='mini' style='display:flex;align-items:center;gap:10px;margin-top:10px'><input type='hidden' name='show_endpoint' value='off' /><input type='checkbox' name='show_endpoint' value='on' {'checked' if show_endpoint else ''}/> Показывать Endpoint</label>
+              <label class='mini' style='display:flex;align-items:center;gap:10px;margin-top:10px'><input type='hidden' name='show_health_cards' value='off' /><input type='checkbox' name='show_health_cards' value='on' {'checked' if show_health_cards else ''}/> Статусные карточки</label>
+            </div>
+          </details>
+          <details id='s-summary' class='manage-card'>
+            <summary class='manage-head'><strong>Сводка</strong><span class='badge'>cache</span></summary>
+            <div class='manage-card-body'>
+              <label class='mini'>Хранить записи в интерфейсе</label>
+              <select name='traffic_days'>
+                <option value='1' {'selected' if traffic_days == 1 else ''}>1 день</option>
+                <option value='3' {'selected' if traffic_days == 3 else ''}>3 дня</option>
+                <option value='7' {'selected' if traffic_days == 7 else ''}>7 дней</option>
+              </select>
+              <div class='sub' style='margin-top:10px'>Старые записи не показываются в журнале трафика.</div>
+            </div>
+          </details>
+          <details id='s-network' class='manage-card'>
+            <summary class='manage-head'><strong>Сеть</strong><span class='badge'>runtime</span></summary>
+            <div class='manage-card-body'>
+              <label class='mini'>Лимит скорости, Mbps</label>
+              <input name='speed_cap_mbps' type='number' min='1' step='1' value='{html.escape(str(SETTINGS.get("network", {}).get("speed_cap_mbps", 200)))}' />
+              <label class='mini' style='display:block;margin-top:10px'>Веб-порты</label>
+              <input name='web_ports' value='{html.escape("/".join(str(p) for p in SETTINGS.get("web_ports", ["80", "443", "8443"] )))}' placeholder='80/443/8443' autocomplete='off' />
+              <div class='sub' style='margin-top:10px'>Через слэш, запятую или пробел.</div>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <div class='section' style='margin-top:16px'>
+        <div class='section-title'><h2><span class='ico'>{icon('storage')}</span>Backup и система</h2><span class='badge'>read only</span></div>
+        <div class='widgets'>
+          <div class='widget'><div class='widget-head'><span class='ico'>{icon('storage')}</span><div class='label'>Backup target</div></div><div class='value'>{html.escape('local' if backup_settings.get('target_type') == 'local' else 'rsync')}</div><div class='sub'>{html.escape(backup_settings.get('target_path') or '-')}</div></div>
+          <div class='widget'><div class='widget-head'><span class='ico'>{icon('services')}</span><div class='label'>Schedule</div></div><div class='value'>{'on' if backup_settings.get('schedule_enabled') else 'off'}</div><div class='sub'>{html.escape(str(backup_settings.get('schedule', 'daily')))}</div></div>
+          <div class='widget'><div class='widget-head'><span class='ico'>{icon('services')}</span><div class='label'>Timer</div></div><div class='value'>{html.escape(str(backup_timer.get('active', 'unknown')))}</div><div class='sub'>{html.escape(str(backup_timer.get('enabled', 'unknown')))}</div></div>
+          <div class='widget'><div class='widget-head'><span class='ico'>{icon('configs')}</span><div class='label'>Next run</div></div><div class='value'>timer</div><div class='sub'>{html.escape((backup_timer.get('next') or '').splitlines()[0] if backup_timer.get('next') else '-')}</div></div>
+        </div>
+        <div class='actions' style='margin-top:14px'><a class='pillbtn' href='/storage'>Открыть backup</a><a class='ghost' href='/services'>Сервисы</a></div>
+      </div>
+
+      <div class='section' style='margin-top:16px'>
+        <div class='section-title'><h2><span class='ico'>{icon('services')}</span>Модули и доступность</h2><span class='badge'>feature flags</span></div>
+        <div class='manage-grid'>
+          {''.join(
+            f"<details class='manage-card'><summary class='manage-head'><strong>{html.escape(label)}</strong><span class='badge'>{'on' if features_cfg.get(key, True) else 'off'}</span></summary><div class='manage-card-body'><input type='hidden' name='feature_{key}' value='off' /><label class='mini' style='display:flex;align-items:center;gap:10px'><input type='checkbox' name='feature_{key}' value='on' {'checked' if features_cfg.get(key, True) else ''}/> Включить в меню</label><div class='sub' style='margin-top:10px'>{html.escape(desc)}</div></div></details>"
+            for key, label, desc in [
+              ('amneziawg', 'AmneziaWG', 'Скрывает или показывает раздел AmneziaWG.'),
+              ('wireguard', 'WireGuard', 'Раздел WireGuard в панели.'),
+              ('openvpn', 'OpenVPN', 'Раздел OpenVPN в панели.'),
+              ('hysteria', 'Hysteria', 'Раздел Hysteria в панели.'),
+              ('vless', 'VLESS', 'Раздел VLESS / Reality в панели.'),
+              ('sstp', 'SSTP', 'Раздел Office SSTP в сети.'),
+              ('fail2ban', 'Fail2Ban', 'Раздел защиты от брутфорса.'),
+              ('emqx', 'EMQX', 'Модули MQTT/EMQX, если они доступны.'),
+            ]
+          )}
+        </div>
+        <div class='actions' style='margin-top:14px'><button class='pillbtn' type='submit'>Сохранить все настройки</button></div>
+        <div class='sub' style='margin-top:10px'>Все переключатели влияют только на то, что видно в панели и на доступные разделы.</div>
+      </div>
+    </form>
+
+    <div class='section' style='margin-top:16px'>
+      <div class='section-title'><h2><span class='ico'>{icon('users')}</span>Пользователи</h2><span class='badge'>{len(users)} шт.</span></div>
       <div class='hero' style='margin-top:0'>
         <div class='hero-right' style='width:100%'>
-          {'<div class="section-title"><h2><span class="ico">' + icon('users') + '</span>Добавить пользователя</h2><span class="badge">доступ к панели</span></div><form method="post" action="/panel-users"><input type="hidden" name="return_to" value="/panel-users" /><div class="grid2"><input name="username" placeholder="Логин" autocomplete="off" /><input name="password" placeholder="Пароль" autocomplete="off" /></div><div class="actions" style="margin-top:12px"><button type="submit" class="pillbtn">Создать</button><button type="submit" formmethod="post" formaction="/panel-users-reset" class="ghost">Сбросить из env</button></div></form>' if viewer_is_admin else '<div class="ops-empty">Управление пользователями доступно только главному аккаунту.</div>'}
+          {'<div class="section-title"><h2><span class="ico">' + icon('users') + '</span>Добавить пользователя</h2><span class="badge">доступ к панели</span></div><form method="post" action="/panel-users"><input type="hidden" name="return_to" value="/panel-settings" /><div class="grid2"><input name="username" placeholder="Логин" autocomplete="off" /><input name="password" placeholder="Пароль" autocomplete="off" /></div><div class="actions" style="margin-top:12px"><button type="submit" class="pillbtn">Создать</button><button type="submit" formmethod="post" formaction="/panel-users-reset" class="ghost">Сбросить из env</button></div></form>' if viewer_is_admin else '<div class="ops-empty">Управление пользователями доступно только главному аккаунту.</div>'}
           <p class='mini'>Пользователи сохраняются в <code>{html.escape(str(CFG['panel_users_file']))}</code>.</p>
         </div>
       </div>
     </div>
+
     <div class='section' style='margin-top:16px'>
       <div class='section-title'><h2><span class='ico'>{icon('users')}</span>Список пользователей</h2><span class='badge'>{len(users)} всего</span></div>
       <div class='tablewrap'><table><tr><th>Логин</th><th>Пароль</th><th>Роль</th><th>Google Authenticator</th><th>Действия</th></tr>{''.join(rows) or '<tr><td colspan="5">Пользователей нет</td></tr>'}</table></div>
     </div>
     """
-    return build_shell("Пользователи панели", "panel-users", body, message, error)
+    return build_shell("Настройки панели", "panel-settings", body, message, error)
+
+
+def build_panel_users_page(message="", error=""):
+    return build_panel_settings_users_page(message, error)
+
+
+def settings_back_link():
+    return "<a class='settings-back' href='/panel-settings'>← Все настройки</a>"
+
+
+def build_panel_settings_page(message="", error=""):
+    sections = [
+        ("appearance", "configs", "Внешний вид", "Главная страница, подписи и отображение элементов."),
+        ("network", "server", "Сеть", "Лимиты скорости и web-порты панели."),
+        ("traffic", "chart", "Трафик", "Период хранения записей в журнале."),
+        ("modules", "services", "Модули", "Видимость VPN и системных разделов в меню."),
+        ("users", "users", "Пользователи", "Аккаунты панели, роли, пароли и 2FA."),
+        ("backup", "system", "Резервные копии", "Назначение, состав и расписание backup."),
+    ]
+    cards = "".join(
+        f"<a class='settings-card' href='/panel-settings/{slug}'><span class='ico'>{icon(icon_name)}</span><strong>{title}</strong><p>{description}</p><span class='settings-open'>Открыть настройки →</span></a>"
+        for slug, icon_name, title, description in sections
+    )
+    return build_shell("Настройки", "panel-settings", f"<div class='settings-grid'>{cards}</div>", message, error)
+
+
+def build_panel_settings_appearance_page(message="", error=""):
+    panel = SETTINGS.get("panel", {})
+    body = f"""
+    {settings_back_link()}
+    <div class='section'>
+      <div class='section-title'><h2><span class='ico'>{icon('configs')}</span>Внешний вид</h2><span class='badge'>главная страница</span></div>
+      <form method='post' action='/panel-settings'>
+        <input type='hidden' name='return_to' value='/panel-settings/appearance' />
+        <div class='manage-grid'>
+          <div class='manage-card'><div class='manage-head'><strong>Подпись</strong><span class='badge'>текст</span></div><label class='mini'>Текст под заголовком сводки</label><input name='home_note' value='{html.escape(str(panel.get("home_note", "") or ""))}' placeholder='Например: основной VPN-сервер' autocomplete='off' /><div class='sub' style='margin-top:10px'>Оставьте поле пустым, чтобы убрать подпись.</div></div>
+          <div class='manage-card'><div class='manage-head'><strong>Endpoint</strong><span class='badge'>сводка</span></div><input type='hidden' name='show_endpoint' value='off' /><label class='mini' style='display:flex;align-items:center;gap:10px'><input type='checkbox' name='show_endpoint' value='on' {'checked' if panel.get('show_endpoint', True) else ''}/> Показывать Endpoint</label><div class='sub' style='margin-top:10px'>Управляет отображением адреса подключения в блоке состояния.</div></div>
+          <div class='manage-card'><div class='manage-head'><strong>Статусы</strong><span class='badge'>карточки</span></div><input type='hidden' name='show_health_cards' value='off' /><label class='mini' style='display:flex;align-items:center;gap:10px'><input type='checkbox' name='show_health_cards' value='on' {'checked' if panel.get('show_health_cards', True) else ''}/> Показывать статусные карточки</label><div class='sub' style='margin-top:10px'>Скрывает или показывает расширенный блок состояния на главной.</div></div>
+        </div>
+        <div class='actions' style='margin-top:14px'><button class='pillbtn' type='submit'>Сохранить внешний вид</button></div>
+      </form>
+    </div>"""
+    return build_shell("Внешний вид", "panel-settings", body, message, error)
+
+
+def build_panel_settings_network_page(message="", error=""):
+    speed = SETTINGS.get("network", {}).get("speed_cap_mbps", 200)
+    ports = "/".join(str(p) for p in SETTINGS.get("web_ports", ["80", "443", "8443"]))
+    body = f"""
+    {settings_back_link()}
+    <div class='section'>
+      <div class='section-title'><h2><span class='ico'>{icon('server')}</span>Сеть</h2><span class='badge'>панель</span></div>
+      <form method='post' action='/panel-settings'>
+        <input type='hidden' name='return_to' value='/panel-settings/network' />
+        <div class='manage-grid'>
+          <div class='manage-card'><div class='manage-head'><strong>Лимит скорости</strong><span class='badge'>Mbps</span></div><label class='mini'>Верхняя граница графиков</label><input name='speed_cap_mbps' type='number' min='1' step='1' value='{html.escape(str(speed))}' /><div class='sub' style='margin-top:10px'>Используется только для визуального масштаба в панели.</div></div>
+          <div class='manage-card'><div class='manage-head'><strong>Web-порты</strong><span class='badge'>listeners</span></div><label class='mini'>Порты web-сервисов</label><input name='web_ports' value='{html.escape(ports)}' placeholder='80/443/8443' autocomplete='off' /><div class='sub' style='margin-top:10px'>Разделяйте значения слэшем, запятой или пробелом.</div></div>
+        </div>
+        <div class='actions' style='margin-top:14px'><button class='pillbtn' type='submit'>Сохранить сеть</button><a class='ghost' href='/firewall'>Открыть firewall</a></div>
+      </form>
+    </div>"""
+    return build_shell("Сеть", "panel-settings", body, message, error)
+
+
+def build_panel_settings_traffic_page(message="", error=""):
+    days = panel_traffic_days()
+    body = f"""
+    {settings_back_link()}
+    <div class='section'>
+      <div class='section-title'><h2><span class='ico'>{icon('chart')}</span>Трафик</h2><span class='badge'>журнал</span></div>
+      <form method='post' action='/panel-settings'>
+        <input type='hidden' name='return_to' value='/panel-settings/traffic' />
+        <div class='manage-grid'>
+          <div class='manage-card'><div class='manage-head'><strong>Период отображения</strong><span class='badge'>до 7 дней</span></div><label class='mini'>Показывать записи за</label><select name='traffic_days'><option value='1' {'selected' if days == 1 else ''}>1 день</option><option value='3' {'selected' if days == 3 else ''}>3 дня</option><option value='7' {'selected' if days == 7 else ''}>7 дней</option></select><div class='sub' style='margin-top:10px'>Настройка ограничивает период данных на странице `/traffic`.</div></div>
+        </div>
+        <div class='actions' style='margin-top:14px'><button class='pillbtn' type='submit'>Сохранить период</button></div>
+      </form>
+    </div>"""
+    return build_shell("Трафик", "panel-settings", body, message, error)
+
+
+def build_panel_settings_modules_page(message="", error=""):
+    features = SETTINGS.get("features", {})
+    module_cards = "".join(
+        f"<div class='manage-card'><div class='manage-head'><strong>{html.escape(label)}</strong><span class='badge'>{'on' if features.get(key, True) else 'off'}</span></div><input type='hidden' name='feature_{key}' value='off' /><label class='mini' style='display:flex;align-items:center;gap:10px'><input type='checkbox' name='feature_{key}' value='on' {'checked' if features.get(key, True) else ''}/> Показывать раздел в меню</label><div class='sub' style='margin-top:10px'>{html.escape(description)}</div></div>"
+        for key, label, description in [
+            ("amneziawg", "AmneziaWG", "Клиенты и статус AmneziaWG."), ("wireguard", "WireGuard", "Клиенты стандартного WireGuard."),
+            ("openvpn", "OpenVPN", "Профили и подключения OpenVPN."), ("hysteria", "Hysteria", "Клиенты Hysteria."),
+            ("vless", "VLESS", "Клиенты VLESS / Reality."), ("sstp", "Office SSTP", "Туннель к офисной сети."),
+            ("fail2ban", "Fail2Ban", "Управление защитой от перебора."), ("emqx", "EMQX", "Инструменты MQTT/EMQX."),
+        ]
+    )
+    body = f"""{settings_back_link()}<div class='section'><div class='section-title'><h2><span class='ico'>{icon('services')}</span>Модули</h2><span class='badge'>меню панели</span></div><form method='post' action='/panel-settings'><input type='hidden' name='return_to' value='/panel-settings/modules' /><div class='manage-grid'>{module_cards}</div><div class='actions' style='margin-top:14px'><button class='pillbtn' type='submit'>Сохранить модули</button></div><p class='mini'>Переключатели меняют только видимость разделов панели и не останавливают сервисы.</p></form></div>"""
+    return build_shell("Модули", "panel-settings", body, message, error)
+
+
+def build_panel_settings_users_page(message="", error=""):
+    users = load_panel_users()
+    viewer = current_request_user()
+    viewer_is_admin = panel_user_is_admin(viewer)
+    cards = []
+    for user in users:
+        name = user["username"]
+        uname = html.escape(name)
+        qname = quote(name, safe="")
+        admin_badge = "<span class='status-pill good'><span class='status-dot'></span>главный</span>" if user.get("is_admin") else "<span class='status-pill'><span class='status-dot'></span>обычный</span>"
+        totp_badge = "<span class='status-pill good'><span class='status-dot'></span>включён</span>" if user.get("totp_enabled") else "<span class='status-pill bad'><span class='status-dot'></span>выключен</span>"
+        can_edit = viewer_is_admin or viewer == name
+        secret_block = ""
+        if user.get("totp_enabled") and user.get("totp_secret"):
+            secret_block = f"<div class='user-mini'>Секрет: <code>{html.escape(user['totp_secret'])}</code></div><div class='user-mini'><img src='/totp-qr/{qname}' alt='2FA QR' style='width:118px;height:118px;border-radius:14px;background:#fff;padding:6px;margin-top:4px' /></div>"
+        if can_edit:
+            edit_controls = f"""
+            <form id='edit-{uname}' method='post' action='/panel-users'>
+              <input type='hidden' name='return_to' value='/panel-settings/users' />
+              <input type='hidden' name='old_username' value='{uname}' />
+              <div class='grid2' style='grid-template-columns:1fr 1fr'>
+                <input name='username' value='{uname}' />
+                <input name='password' placeholder='Новый пароль' autocomplete='off' />
+              </div>
+              <div class='user-actions' style='margin-top:10px'>
+                <button type='submit' class='pillbtn'>Сохранить</button>
+                {"<label class='mini' style='display:flex;align-items:center;gap:10px'><input type='checkbox' name='is_admin' {'checked' if user.get('is_admin') else ''}/> Главный</label>" if viewer_is_admin else ''}
+                {"<form method='post' action='/panel-users-delete'><input type='hidden' name='return_to' value='/panel-settings/users' /><input type='hidden' name='username' value='" + uname + "' /><button type='submit' class='danger'>Удалить</button></form>" if viewer_is_admin and len(users) > 1 else ''}
+              </div>
+            </form>
+            """
+            twofa_controls = f"<div class='user-actions'><form method='post' action='/panel-users-totp'><input type='hidden' name='return_to' value='/panel-settings/users' /><input type='hidden' name='username' value='{uname}' /><input type='hidden' name='action' value='{'regenerate' if user.get('totp_enabled') else 'enable'}' /><button type='submit' class='pillbtn'>{'Перевыпустить' if user.get('totp_enabled') else 'Включить 2FA'}</button></form>{f'<form method=\'post\' action=\'/panel-users-totp\'><input type=\'hidden\' name=\'return_to\' value=\'/panel-settings/users\' /><input type=\'hidden\' name=\'username\' value=\'{uname}\' /><input type=\'hidden\' name=\'action\' value=\'disable\' /><button type=\'submit\' class=\'ghost danger\'>Выключить 2FA</button></form>' if user.get('totp_enabled') else ''}</div>"
+        else:
+            edit_controls = "<div class='user-mini'>Редактирование доступно только для вас или админа.</div>"
+            twofa_controls = f"<div class='user-mini'>{totp_badge}</div>"
+        cards.append(f"""
+        <details class='user-card'>
+          <summary>
+            <div class='user-card-head'>
+              <div class='user-name'>
+                <strong>{uname}</strong>
+                <code>{html.escape(name)}</code>
+              </div>
+              <div class='user-role'>{admin_badge}</div>
+            </div>
+            <div class='user-2fa'></div>
+          </summary>
+          <div class='user-card-body'>
+            <div class='user-mini' style='margin-top:14px'>Нажмите, чтобы раскрыть редактирование и управление 2FA.</div>
+            {secret_block}
+            {edit_controls}
+            {twofa_controls}
+          </div>
+        </details>
+        """)
+    add_user = f"""
+    <div class='users-hero'>
+      <h3>Добавить пользователя</h3>
+      <p>Создайте новый аккаунт панели, задайте пароль и при необходимости сразу выведите его в админы.</p>
+      {'<form method="post" action="/panel-users"><input type="hidden" name="return_to" value="/panel-settings/users" /><div class="grid2" style="grid-template-columns:1fr 1fr"><input name="username" placeholder="Логин" autocomplete="off" /><input name="password" type="password" placeholder="Пароль" autocomplete="new-password" /></div><div class="actions" style="margin-top:12px"><button class="pillbtn" type="submit">Создать пользователя</button><button class="ghost" type="submit" formmethod="post" formaction="/panel-users-reset">Сбросить из env</button></div></form>' if viewer_is_admin else '<div class="users-empty" style="margin-top:14px">Добавлять пользователей может только главный аккаунт.</div>'}
+    </div>
+    """
+    body = f"""
+    {settings_back_link()}
+    <div class='section'>
+      <div class='section-title'><h2><span class='ico'>{icon('users')}</span>Пользователи</h2><span class='badge'>{len(users)} аккаунтов</span></div>
+      <div class='users-toolbar'>
+        {add_user}
+        <div class='users-hero'>
+          <h3>Удобное управление</h3>
+          <p>Редактирование, удаление и 2FA находятся в карточке каждого пользователя. Ничего лишнего, всё на одном экране.</p>
+          <div class='rule-chips' style='margin-top:16px'>
+            <span class='rule-chip'>Пароль</span>
+            <span class='rule-chip'>Роль</span>
+            <span class='rule-chip'>2FA</span>
+            <span class='rule-chip'>Удаление</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class='section' style='margin-top:16px'>
+      <div class='section-title'><h2><span class='ico'>{icon('users')}</span>Аккаунты</h2><span class='badge'>карточки</span></div>
+      <div class='users-grid'>{''.join(cards) or '<div class="users-empty">Пользователей пока нет.</div>'}</div>
+    </div>
+    """
+    return build_shell("Пользователи", "panel-settings", body, message, error)
+
+
+def build_panel_settings_backup_page(message="", error=""):
+    settings = load_backup_settings()
+    timer = backup_timer_status()
+    target_type = settings.get("target_type", "local")
+    scope = settings.get("scope", "critical")
+    schedule = settings.get("schedule", "daily")
+    body = f"""
+    {settings_back_link()}
+    <div class='section'>
+      <div class='section-title'><h2><span class='ico'>{icon('system')}</span>Резервные копии</h2><span class='badge'>{html.escape(timer.get('active', 'unknown'))}</span></div>
+      <form method='post' action='/backup-settings'>
+        <input type='hidden' name='return_to' value='/panel-settings/backup' />
+        <div class='manage-grid'>
+          <div class='manage-card'><div class='manage-head'><strong>Назначение</strong><span class='badge'>local / rsync</span></div><label class='mini'>Тип</label><select name='target_type'><option value='local' {'selected' if target_type == 'local' else ''}>Локальная или смонтированная папка</option><option value='rsync' {'selected' if target_type == 'rsync' else ''}>Rsync по сети</option></select><label class='mini' style='display:block;margin-top:10px'>Локальный путь</label><input name='target_path' value='{html.escape(settings.get("target_path", str(CFG["backup_dir"])))}' autocomplete='off' /><label class='mini' style='display:block;margin-top:10px'>Rsync target</label><input name='rsync_target' value='{html.escape(settings.get("rsync_target", ""))}' placeholder='backup@nas:/backups/server/' autocomplete='off' /></div>
+          <div class='manage-card'><div class='manage-head'><strong>Состав</strong><span class='badge'>scope</span></div><select name='scope'><option value='critical' {'selected' if scope == 'critical' else ''}>Критичные точки</option><option value='system' {'selected' if scope == 'system' else ''}>Вся система</option></select><div class='sub' style='margin-top:10px'>Критичные точки включают `/etc`, systemd, состояние панели и профили.</div></div>
+          <div class='manage-card'><div class='manage-head'><strong>Расписание</strong><span class='badge'>systemd timer</span></div><input type='hidden' name='schedule_enabled' value='off' /><label class='mini' style='display:flex;align-items:center;gap:10px'><input type='checkbox' name='schedule_enabled' value='on' {'checked' if settings.get('schedule_enabled') else ''}/> Автоматический backup</label><select name='schedule' style='margin-top:10px'><option value='hourly' {'selected' if schedule == 'hourly' else ''}>Каждый час</option><option value='daily' {'selected' if schedule == 'daily' else ''}>Каждый день</option><option value='weekly' {'selected' if schedule == 'weekly' else ''}>Каждую неделю</option><option value='monthly' {'selected' if schedule == 'monthly' else ''}>Каждый месяц</option><option value='custom' {'selected' if schedule == 'custom' else ''}>Свое OnCalendar</option></select><input name='custom_calendar' value='{html.escape(settings.get("custom_calendar", ""))}' placeholder='Mon..Fri 03:00' autocomplete='off' style='margin-top:10px' /></div>
+        </div>
+        <div class='actions' style='margin-top:14px'><button class='pillbtn' type='submit'>Сохранить backup</button><a class='ghost' href='/storage'>Диски и архивы</a></div>
+      </form>
+    </div>"""
+    return build_shell("Резервные копии", "panel-settings", body, message, error)
 
 
 def build_services_page(message="", error=""):
@@ -5134,6 +5534,16 @@ def qr_page(profile_name, client_name):
 
 
 def page_for_path(path, message="", error=""):
+    settings_pages = {
+        "/panel-settings/appearance": build_panel_settings_appearance_page,
+        "/panel-settings/network": build_panel_settings_network_page,
+        "/panel-settings/traffic": build_panel_settings_traffic_page,
+        "/panel-settings/modules": build_panel_settings_modules_page,
+        "/panel-settings/users": build_panel_settings_users_page,
+        "/panel-settings/backup": build_panel_settings_backup_page,
+    }
+    if path in settings_pages:
+        return settings_pages[path](message, error)
     route_key = {
         "/amnezia": "amnezia",
         "/wireguard": "wireguard",
@@ -5179,8 +5589,8 @@ def page_for_path(path, message="", error=""):
         return build_fail2ban_page(message, error)
     if path == "/audit":
         return build_audit_page(message, error)
-    if path == "/panel-users":
-        return build_panel_users_page(message, error)
+    if path == "/panel-settings":
+        return build_panel_settings_page(message, error)
     if path == "/configs":
         return build_configs_page(message, error)
     if path == "/firewall":
@@ -5272,7 +5682,7 @@ class Handler(BaseHTTPRequestHandler):
                 q = parse_qs(parsed.query)
                 kind = q.get("kind", [""])[0]
                 ident = q.get("ident", [""])[0]
-                self._send(200, json.dumps(traffic_entries(kind, ident, days=7, limit=500), ensure_ascii=False), content_type="application/json; charset=utf-8")
+                self._send(200, json.dumps(traffic_entries(kind, ident, days=panel_traffic_days(), limit=500), ensure_ascii=False), content_type="application/json; charset=utf-8")
                 return
             if parsed.path == "/traffic":
                 q = parse_qs(parsed.query)
@@ -5284,7 +5694,10 @@ class Handler(BaseHTTPRequestHandler):
                 unit = parse_qs(parsed.query).get("unit", [""])[0]
                 self._send(200, build_logs_page(unit=unit))
                 return
-            if parsed.path in {"/system", "/clients", "/amnezia", "/wireguard", "/openvpn", "/hysteria", "/vless", "/services", "/server-users", "/storage", "/processes", "/sstp", "/tasks", "/domains", "/fail2ban", "/audit", "/panel-users", "/configs", "/firewall"}:
+            if parsed.path == "/panel-users":
+                self._redirect("/panel-settings/users")
+                return
+            if parsed.path in {"/system", "/clients", "/amnezia", "/wireguard", "/openvpn", "/hysteria", "/vless", "/services", "/server-users", "/storage", "/processes", "/sstp", "/tasks", "/domains", "/fail2ban", "/audit", "/panel-settings", "/panel-settings/appearance", "/panel-settings/network", "/panel-settings/traffic", "/panel-settings/modules", "/panel-settings/users", "/panel-settings/backup", "/configs", "/firewall"}:
                 self._send(200, page_for_path(parsed.path))
                 return
             if parsed.path.startswith("/download/"):
@@ -5587,7 +6000,7 @@ class Handler(BaseHTTPRequestHandler):
                 is_admin = form.get("is_admin", [""])[0] == "on" if viewer_is_admin else None
                 upsert_panel_user(username, password or None, is_admin, old_username=old_username or None)
                 audit_event("panel_user_save", username)
-                self._redirect(return_to or "/panel-users")
+                self._redirect(return_to or "/panel-settings")
                 return
             if self.path == "/panel-users-delete":
                 viewer = current_request_user()
@@ -5596,7 +6009,7 @@ class Handler(BaseHTTPRequestHandler):
                 username = form.get("username", [""])[0]
                 delete_panel_user(username)
                 audit_event("panel_user_delete", username)
-                self._redirect(return_to or "/panel-users")
+                self._redirect(return_to or "/panel-settings")
                 return
             if self.path == "/panel-users-totp":
                 viewer = current_request_user()
@@ -5605,7 +6018,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not (panel_user_is_admin(viewer) or viewer == username):
                     raise RuntimeError("доступ запрещён")
                 set_panel_user_totp(username, action)
-                self._redirect(return_to or "/panel-users")
+                self._redirect(return_to or "/panel-settings")
                 return
             if self.path == "/panel-users-reset":
                 viewer = current_request_user()
@@ -5613,7 +6026,11 @@ class Handler(BaseHTTPRequestHandler):
                     raise RuntimeError("доступ запрещён")
                 reset_panel_users_from_env()
                 audit_event("panel_users_reset", "env")
-                self._redirect(return_to or "/panel-users")
+                self._redirect(return_to or "/panel-settings")
+                return
+            if self.path == "/panel-settings":
+                update_panel_settings(form)
+                self._redirect(return_to or "/panel-settings")
                 return
             self._send(404, "not found", content_type="text/plain; charset=utf-8")
         except Exception as e:
