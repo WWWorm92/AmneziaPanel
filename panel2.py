@@ -182,7 +182,7 @@ DEFAULT_SETTINGS = {
         "emqx": True,
     },
     "network": {"speed_cap_mbps": 200},
-    "panel": {"home_note": "", "show_endpoint": True, "show_health_cards": True, "traffic_days": 7},
+    "panel": {"home_note": "", "show_endpoint": True, "show_health_cards": True, "traffic_days": 1},
     "downloads": {
         "AmneziaWG (старый)": "/etc/wireguard/wg0.conf",
         "AmneziaWG": "/etc/amnezia/amneziawg/awg0.conf",
@@ -2523,14 +2523,48 @@ def storage_snapshot():
 
 
 def process_snapshot():
+    cpu_count = max(os.cpu_count() or 1, 1)
+
+    def parse_ps_output(output):
+        rows = []
+        for line in output.splitlines()[1:]:
+            parts = line.split(None, 5)
+            if len(parts) < 6:
+                continue
+            pid, user, pcpu, pmem, comm, args = parts
+            if comm == "ps" and "ps -eo pid,user,pcpu,pmem,comm,args" in args:
+                continue
+            try:
+                raw_cpu = float(pcpu)
+                mem = float(pmem)
+            except Exception:
+                continue
+            rows.append({
+                "pid": pid,
+                "user": user,
+                "cpu_raw": raw_cpu,
+                "cpu": min(raw_cpu / cpu_count, 100.0),
+                "mem": mem,
+                "comm": comm,
+                "args": args,
+            })
+        return rows
+
     top_cpu = safe_run(["ps", "-eo", "pid,user,pcpu,pmem,comm,args", "--sort=-pcpu"])
     top_mem = safe_run(["ps", "-eo", "pid,user,pcpu,pmem,comm,args", "--sort=-pmem"])
-    processes = []
-    for line in top_cpu.splitlines()[1:25]:
-        parts = line.split(None, 5)
-        if len(parts) >= 6:
-            processes.append({"pid": parts[0], "user": parts[1], "cpu": parts[2], "mem": parts[3], "comm": parts[4], "args": parts[5]})
-    return {"top_cpu": "\n".join(top_cpu.splitlines()[:18]), "top_mem": "\n".join(top_mem.splitlines()[:18]), "processes": processes}
+    processes = parse_ps_output(top_cpu)[:24]
+    cpu_rows = parse_ps_output(top_cpu)[:18]
+    mem_rows = parse_ps_output(top_mem)[:18]
+
+    def render_rows(rows):
+        out = ["  PID USER      CPU%  MEM% COMMAND           ARGS"]
+        for row in rows:
+            out.append(
+                f"{int(row['pid']):>6} {row['user'][:8]:<8} {row['cpu']:>5.1f} {row['mem']:>5.1f} {row['comm'][:16]:<16} {row['args'][:110]}"
+            )
+        return "\n".join(out)
+
+    return {"top_cpu": render_rows(cpu_rows), "top_mem": render_rows(mem_rows), "processes": processes, "cpu_count": cpu_count}
 
 
 def signal_process(pid, signal_name):
@@ -3221,20 +3255,53 @@ def xray_client_source_ips():
     return mapping
 
 
+_traffic_log_cache = {}
+_dns_log_cache = {}
+
+
+def _ttl_cache_get(cache, key, ttl):
+    item = cache.get(key)
+    if not item:
+        return None
+    ts, value = item
+    if time.time() - ts > ttl:
+        cache.pop(key, None)
+        return None
+    return value
+
+
+def _ttl_cache_set(cache, key, value):
+    cache[key] = (time.time(), value)
+
+
 def vpn_traffic_log_lines(days=7):
+    days = max(1, min(int(days or 7), 7))
+    cache_key = days
+    cached = _ttl_cache_get(_traffic_log_cache, cache_key, 30)
+    if cached is not None:
+        return cached
     since = f"{days} days ago"
     try:
-        return run(["journalctl", "-k", "--since", since, "--no-pager", "-o", "short-iso-precise", "-g", "VPNTRAFFIC"]).splitlines()
+        lines = run(["journalctl", "-k", "--since", since, "--no-pager", "-o", "short-iso-precise", "-g", "VPNTRAFFIC"]).splitlines()
     except Exception:
-        return []
+        lines = []
+    _ttl_cache_set(_traffic_log_cache, cache_key, lines)
+    return lines
 
 
 def vpn_dns_log_lines(days=7):
+    days = max(1, min(int(days or 7), 7))
+    cache_key = days
+    cached = _ttl_cache_get(_dns_log_cache, cache_key, 30)
+    if cached is not None:
+        return cached
     since = f"{days} days ago"
     try:
-        return run(["journalctl", "-u", "vpn-dns-log.service", "--since", since, "--no-pager", "-o", "cat"]).splitlines()
+        lines = run(["journalctl", "-u", "vpn-dns-log.service", "--since", since, "--no-pager", "-o", "cat"]).splitlines()
     except Exception:
-        return []
+        lines = []
+    _ttl_cache_set(_dns_log_cache, cache_key, lines)
+    return lines
 
 
 def parse_vpn_traffic_lines(lines, source_ip=None):
@@ -3259,9 +3326,9 @@ def parse_vpn_traffic_lines(lines, source_ip=None):
             "time": ts,
             "time_human": format_traffic_time(ts),
             "src": src.group(1) if src else "-",
-            "src_host": resolve_reverse_dns(src.group(1)) if src else "-",
+            "src_host": src.group(1) if src else "-",
             "dst": dst.group(1) if dst else "-",
-            "dst_host": resolve_reverse_dns(dst.group(1)) if dst else "-",
+            "dst_host": dst.group(1) if dst else "-",
             "proto": proto.group(1) if proto else "-",
             "sport": spt.group(1) if spt else "-",
             "dport": dpt.group(1) if dpt else "-",
@@ -3272,7 +3339,7 @@ def parse_vpn_traffic_lines(lines, source_ip=None):
     return entries
 
 
-def traffic_entries(kind, ident, days=7, limit=500):
+def traffic_entries(kind, ident, days=7, limit=200):
     kind = str(kind or "").strip()
     ident = str(ident or "").strip()
     supported = kind in {"amnezia", "wireguard", "openvpn"}
@@ -3801,7 +3868,7 @@ async function refreshTrafficPage() {{
 }}
 if (document.querySelector('[data-traffic-root]')) {{
   refreshTrafficPage();
-  setInterval(refreshTrafficPage, 1500);
+  setInterval(refreshTrafficPage, 15000);
 }}
 </script>
 </body></html>"""
@@ -4493,7 +4560,7 @@ def build_traffic_page(message="", error="", kind="", ident=""):
         "hysteria": "Hysteria",
         "vless": "VLESS",
     }
-    data = traffic_entries(kind, ident, days=panel_traffic_days(), limit=500)
+    data = traffic_entries(kind, ident, days=panel_traffic_days(), limit=200)
     supported = data["supported"]
     source_ip = data["source_ip"]
     entries = data["entries"]
@@ -4527,7 +4594,7 @@ def build_traffic_page(message="", error="", kind="", ident=""):
             f"<div class='traffic-raw'><span>Сырой лог</span><pre>{raw_text}</pre></div>"
             f"</td></tr>"
         )
-    table = ''.join(rows) or "<tr><td colspan='5'>Нет данных за последние 7 дней</td></tr>"
+    table = ''.join(rows) or "<tr><td colspan='5'>Нет данных за последний день</td></tr>"
     title = kind_labels.get(kind, kind or "клиент")
     client_label = f"{client_name} ({source_ip})" if client_name else (source_ip or "-")
     note = ""
@@ -4542,7 +4609,7 @@ def build_traffic_page(message="", error="", kind="", ident=""):
     <div class='section' data-traffic-root data-traffic-kind='{html.escape(kind)}' data-traffic-ident='{html.escape(ident, quote=True)}' data-traffic-source='{html.escape(source_ip, quote=True)}'>
       <div class='section-title'><h2><span class='ico'>{icon('chart')}</span>Трафик клиента</h2><span class='badge'>{html.escape(title)}</span></div>
       <div class='rule-chips'>
-        <span class='rule-chip good'>Хранение: 7 дней</span>
+        <span class='rule-chip good'>Хранение: 1 день</span>
         <span class='rule-chip'>{html.escape(client_label)}</span>
         <span class='rule-chip' data-traffic-refresh-state>обновляется</span>
         <span class='rule-chip'>DNS: {html.escape(dns_logger_label)}</span>
@@ -4791,7 +4858,7 @@ def build_panel_settings_traffic_page(message="", error=""):
       <form method='post' action='/panel-settings'>
         <input type='hidden' name='return_to' value='/panel-settings/traffic' />
         <div class='manage-grid'>
-          <div class='manage-card'><div class='manage-head'><strong>Период отображения</strong><span class='badge'>до 7 дней</span></div><label class='mini'>Показывать записи за</label><select name='traffic_days'><option value='1' {'selected' if days == 1 else ''}>1 день</option><option value='3' {'selected' if days == 3 else ''}>3 дня</option><option value='7' {'selected' if days == 7 else ''}>7 дней</option></select><div class='sub' style='margin-top:10px'>Настройка ограничивает период данных на странице `/traffic`.</div></div>
+          <div class='manage-card'><div class='manage-head'><strong>Период отображения</strong><span class='badge'>последний день</span></div><label class='mini'>Показывать записи за</label><select name='traffic_days'><option value='1' {'selected' if days == 1 else ''}>1 день</option><option value='3' {'selected' if days == 3 else ''}>3 дня</option><option value='7' {'selected' if days == 7 else ''}>7 дней</option></select><div class='sub' style='margin-top:10px'>Настройка ограничивает период данных на странице `/traffic`.</div></div>
         </div>
         <div class='actions' style='margin-top:14px'><button class='pillbtn' type='submit'>Сохранить период</button></div>
       </form>
@@ -5422,7 +5489,7 @@ def build_processes_page(message="", error=""):
         <div class='manage-card'>
           <div class='manage-head'><strong>{html.escape(proc['comm'])}</strong><span class='badge'>PID {html.escape(proc['pid'])}</span></div>
           <div class='sub'>{html.escape(proc['args'][:180])}</div>
-          <div class='rule-chips'><span class='rule-chip good'>CPU {html.escape(proc['cpu'])}%</span><span class='rule-chip'>RAM {html.escape(proc['mem'])}%</span><span class='rule-chip'>{html.escape(proc['user'])}</span></div>
+          <div class='rule-chips'><span class='rule-chip good'>CPU {cpu:.1f}%</span><span class='rule-chip'>RAM {mem:.1f}%</span><span class='rule-chip'>{html.escape(proc['user'])}</span></div>
           <div class='progress'><span style='width:{cpu}%'></span></div>
           <div class='actions' style='margin-top:14px'>
             <form method='post' action='/process-signal'><input type='hidden' name='return_to' value='/processes' /><input type='hidden' name='pid' value='{html.escape(proc['pid'])}' /><input type='hidden' name='signal' value='hup' /><button class='ghost' type='submit'>HUP</button></form>
